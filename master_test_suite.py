@@ -124,19 +124,16 @@ class TestLLMOrchestration(unittest.TestCase):
         self.assertEqual(parsed['rating'], "BUY")
 
     def test_consensus_logic(self):
-        """Test Ensemble Analyst consensus aggregation and guardrails."""
-        # Mock analyze to return different scores for deepseek and mistral
+        """Test Gemma Analyst inference logic."""
+        # Mock analyze to return score for gemma
         def mock_analyze(prompt, model_key):
-            if model_key == "deepseek":
-                return '{"score": 90, "rating": "BUY"}'
-            else:
-                return '{"score": 80, "rating": "BUY"}'
+            return '{"score": 90, "rating": "BUY"}'
                 
         self.analyst.analyze = mock_analyze
         res = self.analyst.get_consensus("AAPL", "Prompt")
         
         self.assertTrue(res['is_consensus'])
-        self.assertEqual(res['score'], 85)
+        self.assertEqual(res['score'], 90)
         self.assertEqual(res['rating'], "BUY")
 
     def test_consensus_guardrail(self):

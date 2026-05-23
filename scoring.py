@@ -155,8 +155,8 @@ def calculate_quant_score(
         - Revenue Growth      : 15 pts
         - Valuation (P/E)     : 15 pts  (fixed: negative P/E → 0 pts)
       Bollinger + Vol : 10 pts
-        - %B Position         : 10 pts  (new)
-        - Volatility Penalty  : -5 pts  (new; >5% daily range)
+        - %B Position         : 10 pts  (momentum-aware: breakout OR mean-reversion)
+        - Volatility Penalty  : -5 pts  (>5% daily range)
       Sentiment/Risk  : 10 pts
         - Social Sentiment    :  5 pts
         - Earnings Risk       : -10 pts penalty
@@ -206,13 +206,20 @@ def calculate_quant_score(
     except (TypeError, ValueError):
         pass
 
-    # ── 3. BOLLINGER BAND POSITION (10 pts) — FIX #3 ───────────────────────
+    # ── 3. BOLLINGER BAND POSITION (10 pts) — momentum-aware ────────────────
+    # %B + Trend interact: a "breakout" setup (above middle band, trending up) earns
+    # the bonus; a "mean-reversion" setup (near lower band, trending down) also earns it.
+    # The original trend-agnostic logic was mathematically incoherent — STRONG UP and
+    # %B < 0.1 are mutually exclusive (can't be both above sma_20 AND below lower band).
     percent_b  = techs.get("percent_b", 0.5)
     volatility = techs.get("volatility", 0)
+    is_up      = techs["trend"] == "STRONG UP"
 
-    if percent_b < 0.1:        score += 10  # Near lower band → mean-reversion
-    elif percent_b < 0.3:      score +=  5  # Modest oversold zone
-    elif percent_b > 0.9:      score -=  5  # Extended above upper band
+    if percent_b > 1.0:                       score -= 5   # Extended beyond upper band
+    elif is_up and 0.5 <= percent_b <= 0.9:   score += 10  # Breakout: above middle, trending up
+    elif is_up and 0.4 <= percent_b < 0.5:    score += 5   # Above middle, building
+    elif (not is_up) and percent_b < 0.1:     score += 10  # Mean-reversion: oversold + down
+    elif (not is_up) and percent_b < 0.3:     score += 5   # Modest oversold + down
 
     # Volatility Risk Penalty: daily swing > 5% is a risky environment
     if volatility > 5.0:       score -=  5
