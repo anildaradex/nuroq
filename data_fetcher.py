@@ -34,16 +34,23 @@ class PolygonRateLimiter:
         self.lock = threading.Lock()
 
     def wait(self, logger=None) -> None:
-        with self.lock:
-            now = time.time()
-            self.requests = [r for r in self.requests if now - r < 60]
-            if len(self.requests) >= self.max_per_min:
-                wait_time = 60 - (now - self.requests[0]) + 1
-                if wait_time > 0:
-                    if logger:
-                        logger.log(f"⏳ Rate Limiter: Pausing {round(wait_time, 1)}s to respect Polygon limit.")
-                    time.sleep(wait_time)
-            self.requests.append(time.time())
+        """
+        Reserve a request slot, sleeping outside the lock so concurrent workers
+        can still queue up. Loops in case another thread filled the slot while
+        this one was sleeping.
+        """
+        while True:
+            with self.lock:
+                now = time.time()
+                self.requests = [r for r in self.requests if now - r < 60]
+                if len(self.requests) < self.max_per_min:
+                    self.requests.append(now)
+                    return
+                wait_time = 60 - (now - self.requests[0]) + 0.5
+            # Sleep without holding the lock so other workers can compute their own wait.
+            if logger and wait_time > 0:
+                logger.log(f"⏳ Rate Limiter: Pausing {round(wait_time, 1)}s to respect Polygon limit.")
+            time.sleep(max(wait_time, 0.1))
 
 
 class AppCache:
@@ -204,30 +211,53 @@ def get_polygon_news(ticker: str, logger=None) -> Optional[str]:
     return None
 
 
+_POLYGON_RATE_LIMIT_RETRIES = 3
+_POLYGON_RATE_LIMIT_BACKOFF = 60  # seconds; doubled on each retry up to max
+
+
 def _fetch_bars_from_polygon(ticker: str, start_date: str, end_date: str, logger=None) -> list:
-    """Internal helper: fetches OHLCV bars from Polygon for a given date range."""
-    rate_limiter.wait(logger)
+    """
+    Fetches OHLCV bars from Polygon for a given date range.
+    Bounded retry on rate-limit responses (3 attempts with exponential backoff),
+    no recursion.
+    """
     url = (
         f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day"
         f"/{start_date}/{end_date}?adjusted=true&sort=asc&apiKey={POLYGON_API_KEY}"
     )
-    try:
-        response = requests.get(url, timeout=15).json()
+    backoff = _POLYGON_RATE_LIMIT_BACKOFF
+    for attempt in range(1, _POLYGON_RATE_LIMIT_RETRIES + 1):
+        rate_limiter.wait(logger)
+        try:
+            response = requests.get(url, timeout=15).json()
+        except Exception as e:
+            if logger:
+                logger.log(f"⚠️ History Fetch Error [{ticker}]: {e}", level="ERROR")
+            raise
+
         if "results" in response:
             return response["results"]
+
         status = response.get("status", "")
-        if status == "ERROR" or "limit" in str(response).lower():
+        body = str(response).lower()
+        is_rate_limited = status == "ERROR" or "limit" in body or "exceeded" in body
+
+        if not is_rate_limited:
             if logger:
-                logger.log(f"🛑 Polygon Rate Limit hit for {ticker}. Waiting 60s...", level="WARNING")
-            time.sleep(60)
-            return _fetch_bars_from_polygon(ticker, start_date, end_date, logger)
+                logger.log(f"⚠️ No OHLCV for {ticker}: {status}", level="WARNING")
+            return []
+
+        if attempt >= _POLYGON_RATE_LIMIT_RETRIES:
+            if logger:
+                logger.log(f"🛑 Polygon rate-limit retries exhausted for {ticker} after {attempt} attempts.",
+                           level="ERROR")
+            return []
         if logger:
-            logger.log(f"⚠️ No OHLCV for {ticker}: {status}", level="WARNING")
-        return []
-    except Exception as e:
-        if logger:
-            logger.log(f"⚠️ History Fetch Error [{ticker}]: {e}", level="ERROR")
-        raise e
+            logger.log(f"🛑 Polygon rate-limited for {ticker} (attempt {attempt}/{_POLYGON_RATE_LIMIT_RETRIES}). "
+                       f"Backing off {backoff}s.", level="WARNING")
+        time.sleep(backoff)
+        backoff = min(backoff * 2, 300)
+    return []
 
 
 @retry(

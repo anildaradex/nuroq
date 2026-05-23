@@ -10,6 +10,7 @@ import os
 import pandas as pd
 import sys
 import argparse
+import yfinance as yf
 import json
 import re
 import sqlite3
@@ -293,6 +294,19 @@ class TradeGatekeeper:
         except asyncio.TimeoutError:
             return "TIMEOUT"
 
+    def send_notification(self, message: str) -> None:
+        """Fire-and-forget Telegram alert. Safe to call from any thread."""
+        if not self.app or not self.loop:
+            logger.log("⚠️ Gatekeeper not started; dropping notification.", level="WARNING")
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(
+                self.app.bot.send_message(chat_id=self.chat_id, text=message),
+                self.loop,
+            )
+        except Exception as e:
+            logger.log(f"⚠️ Notification dispatch failed: {e}", level="WARNING")
+
 class ShadowExecutor:
     def __init__(self, db_path="nuroq.db"):
         self.db_path = db_path
@@ -457,7 +471,9 @@ class PortfolioManager:
                         elif tp > 0 and curr_price >= tp:
                             logger.log(f"🎯 TAKE PROFIT HIT: {ticker} at ${curr_price} (Target: ${tp})", level="INFO")
                             gatekeeper.send_notification(f"🎯 ALERT: Take Profit hit for {ticker} at ${curr_price}. Time to harvest gains?")
-                    except: continue
+                    except Exception as e:
+                        logger.log(f"⚠️ Price refresh skipped for {ticker}: {e}", level="WARNING")
+                        continue
         except Exception as e:
             logger.log(f"⚠️ Portfolio Refresh Error: {e}", level="ERROR")
         return self.get_portfolio()
@@ -503,16 +519,66 @@ gatekeeper = TradeGatekeeper(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID)
 executor = ShadowExecutor()
 alpaca_api = LiveAlpacaExecutor()
 
-def handle_quick_trade(ticker, shares, action, order_type, tif, limit_price, stop_price):
+def _live_equity(fallback: float = 10_000.0) -> float:
+    """Returns the live Alpaca account equity, or the fallback if disconnected."""
+    try:
+        acct = alpaca_api.get_account_summary()
+        if acct.get("connected") and acct.get("equity", 0) > 0:
+            return float(acct["equity"])
+    except Exception as e:
+        logger.log(f"⚠️ _live_equity fell back to ${fallback}: {e}", level="WARNING")
+    return fallback
+
+
+def render_alpaca_panel() -> str:
+    """Markdown snapshot of Alpaca equity, cash, today's P/L, and 30-day return."""
+    acct = alpaca_api.get_account_summary()
+    if not acct.get("connected"):
+        return ("### 💰 Alpaca Account\n"
+                "_Not connected._ Check `ALPACA_API_KEY` / `ALPACA_SECRET_KEY` in `.env`.")
+
+    pl_sign = "+" if acct["todays_pl"] >= 0 else ""
+    pl_emoji = "🟢" if acct["todays_pl"] >= 0 else "🔴"
+
+    hist = alpaca_api.get_portfolio_history(period_days=30)
+    if hist.get("connected") and hist["equity_series"]:
+        r = hist["return_pct"]
+        r_sign = "+" if r >= 0 else ""
+        r_emoji = "🟢" if r >= 0 else "🔴"
+        thirty_day = f"{r_emoji} **30-day**: {r_sign}{r:.2f}%"
+    else:
+        thirty_day = "_30-day history unavailable_"
+
+    return (
+        f"### 💰 Alpaca Account ({acct['status']})\n"
+        f"| Equity | Cash | Buying Power | Positions |\n"
+        f"|:---:|:---:|:---:|:---:|\n"
+        f"| **${acct['equity']:,.2f}** | ${acct['cash']:,.2f} "
+        f"| ${acct['buying_power']:,.2f} | ${acct['positions_value']:,.2f} |\n\n"
+        f"{pl_emoji} **Today**: {pl_sign}${acct['todays_pl']:,.2f} "
+        f"({pl_sign}{acct['todays_pl_pct']:.2f}%) &nbsp;|&nbsp; {thirty_day}"
+    )
+
+
+def handle_quick_trade(ticker, shares, action, order_type, tif, limit_price, stop_price,
+                       sl_price=None, tp_price=None):
     if not ticker or shares is None or shares <= 0:
         return "⚠️ Please enter a valid ticker and a share amount greater than 0."
-        
+
     # Validate required prices based on order type
     if order_type in ["Limit", "Stop Limit"] and not limit_price:
         return f"⚠️ {order_type} orders require a Limit Price."
     if order_type in ["Stop", "Stop Limit", "Trailing Stop"] and not stop_price:
         return f"⚠️ {order_type} orders require a Stop Price (or Trailing Value)."
-        
+
+    # Bracket path: Market entry + SL + TP atomically
+    if order_type == "Market" and sl_price and tp_price and sl_price > 0 and tp_price > 0:
+        return alpaca_api.submit_bracket_order(
+            ticker=ticker, action=action, shares=int(shares),
+            sl=float(sl_price), tp=float(tp_price), tif=tif,
+        )
+
+    # Single-order path (existing behavior)
     return alpaca_api.submit_advanced_order(
         ticker=ticker, action=action, shares=int(shares),
         order_type=order_type, tif=tif, limit_price=limit_price, stop_price=stop_price
@@ -601,8 +667,8 @@ def analyze_single_ticker_data(ticker, pre_fetched_data=None, pre_fetched_funds=
     final_score = calculate_quant_score(techs, funds, w_trend, e_risk, st_sent, score)
     
     # Consistency Check: Rating follows Quant Score
-    if final_score >= 75: rating = "BUY"
-    elif final_score <= 40: rating = "SELL"
+    if final_score >= 60: rating = "BUY"
+    elif final_score <= 30: rating = "SELL"
     else: rating = "HOLD"
 
     # Record to persistent Signal History
@@ -920,8 +986,8 @@ def analyze_stock(ticker, is_auto=False):
     final_score = calculate_quant_score(techs, funds, w_trend, e_risk, st_sent, score)
     
     # Consistency Check: Rating must follow the Quant Score
-    if final_score >= 75: recommendation = "BUY"
-    elif final_score <= 40: recommendation = "SELL"
+    if final_score >= 60: recommendation = "BUY"
+    elif final_score <= 30: recommendation = "SELL"
     else: recommendation = "HOLD"
     
     # --- DETAILED AUDIT LOG ---
@@ -980,8 +1046,8 @@ def analyze_stock(ticker, is_auto=False):
         for c in cons: cot_md += f"- {c}\n"
 
     # ── BOX 4: Trade Setup (bottom-right) ─────────────────────────────────
-    sizing = calculate_sizing(techs['price'], techs['atr'])
-    gate_threshold = 90 if e_risk['risk'] else 80
+    sizing = calculate_sizing(techs['price'], techs['atr'], account=_live_equity())
+    gate_threshold = 80 if e_risk['risk'] else 70
     gate_status = "🔒 GATE LOCKED" if final_score < gate_threshold else "🔓 GATE OPEN — awaiting Telegram approval"
 
     setup_md  = f"### 📐 Trade Setup\n\n"
@@ -998,22 +1064,40 @@ def analyze_stock(ticker, is_auto=False):
     # --- PORTFOLIO EXECUTION ---
     # Gating Logic: 
     # BUY: Final Quant Score >= threshold
-    gate_threshold = 90 if e_risk['risk'] else 80
+    gate_threshold = 80 if e_risk['risk'] else 70
     
     is_buy = recommendation == "BUY"
     is_sell = recommendation == "SELL"
-    
+
+    # SELL gate: a single dipped score on a held position shouldn't auto-exit.
+    # Require corroborating evidence: overbought RSI, extended %B, or earnings imminent.
+    sell_distress = (
+        techs.get("rsi", 50) > 75 or
+        techs.get("percent_b", 0.5) > 0.95 or
+        e_risk.get("risk", False)
+    )
     should_trigger_buy = is_buy and final_score >= gate_threshold and is_consensus
-    should_trigger_sell = is_sell and in_portfolio
-    
+    should_trigger_sell = is_sell and in_portfolio and sell_distress
+
     if should_trigger_sell:
-        # Automate SELL signals: Notify and Execute immediately
-        logger.log(f"📉 Auto-Executing SELL for {ticker} (Score: {final_score}).")
-        gatekeeper.send_notification(f"📉 [PORTFOLIO EXIT] {ticker.upper()}\nScore: {final_score}\nPrice: ${techs['price']}\nReason: {reasoning[:200]}")
-        
+        # Automate SELL signals: close at broker first, then update local state.
+        logger.log(f"📉 Auto-Executing SELL for {ticker} (Score: {final_score}, "
+                   f"RSI: {techs.get('rsi')}, %B: {techs.get('percent_b')}, earnings: {e_risk.get('risk')}).")
+        close_result = alpaca_api.close_position(ticker.upper())
+        gatekeeper.send_notification(
+            f"📉 [PORTFOLIO EXIT] {ticker.upper()}\n"
+            f"Score: {final_score} | RSI: {techs.get('rsi')} | %B: {techs.get('percent_b')}\n"
+            f"Price: ${techs['price']}\n{close_result}\n"
+            f"Reason: {reasoning[:200]}"
+        )
         portfolio_mgr.remove_position(ticker.upper())
-        output_rec += f"\n\n✅ [PORTFOLIO EXIT] Simulated SELL of {ticker.upper()} at ${techs['price']}."
+        output_rec += f"\n\n{close_result}"
         agent_memory.log_decision(ticker.upper(), recommendation, final_score, reasoning)
+    elif is_sell and in_portfolio:
+        logger.log(f"🛑 SELL classified for {ticker} but distress gate not met "
+                   f"(RSI={techs.get('rsi')}, %B={techs.get('percent_b')}, earnings={e_risk.get('risk')}). Holding.")
+        output_rec += (f"\n\n🛑 SELL classified (score {final_score}) but distress gate not met — holding. "
+                       f"RSI={techs.get('rsi')}, %B={techs.get('percent_b')}.")
         
     elif should_trigger_buy:
         # BUY signals still require approval
@@ -1029,13 +1113,24 @@ def analyze_stock(ticker, is_auto=False):
             logger.log(f"📱 Telegram Decision for {ticker}: {decision}")
             
             if decision == "EXECUTE":
-                sizing = calculate_sizing(techs['price'], techs['atr'])
-                exec_result = executor.execute_trade(ticker.upper(), techs['price'], amount=sizing['amount'])
-                portfolio_mgr.add_position(ticker.upper(), sizing['shares'], techs['price'], 
-                                               sl=sizing['sl'], tp=sizing['tp'], score=final_score, rating=recommendation)
-                output_rec += f"\n\n{exec_result}\nStop Loss: ${sizing['sl']} | Take Profit: ${sizing['tp']}"
-                logger.log(f"✅ Executed BUY for {ticker}: {sizing['shares']} shares")
-                agent_memory.log_decision(ticker.upper(), recommendation, final_score, reasoning)
+                sizing = calculate_sizing(techs['price'], techs['atr'], account=_live_equity())
+                shares_int = int(sizing['shares'])
+                if shares_int < 1:
+                    skip_msg = (f"⚠️ Position size rounds to 0 shares "
+                                f"(price=${techs['price']}, atr={techs['atr']}, raw={sizing['shares']}). Skipped.")
+                    logger.log(f"⚠️ {ticker} sizing rounds to 0 — skipping execute", level="WARNING")
+                    output_rec += f"\n\n{skip_msg}"
+                else:
+                    exec_result = alpaca_api.submit_bracket_order(
+                        ticker.upper(), 'buy', shares_int,
+                        sl=sizing['sl'], tp=sizing['tp'],
+                    )
+                    portfolio_mgr.add_position(ticker.upper(), shares_int, techs['price'],
+                                               sl=sizing['sl'], tp=sizing['tp'],
+                                               score=final_score, rating=recommendation)
+                    output_rec += f"\n\n{exec_result}"
+                    logger.log(f"✅ Executed bracket BUY for {ticker}: {shares_int} shares")
+                    agent_memory.log_decision(ticker.upper(), recommendation, final_score, reasoning)
             else:
                 output_rec += f"\n\n🛑 Action {decision}."
         except Exception as e:
@@ -1250,7 +1345,7 @@ class AgentLoop:
             logger.log(f"🔍 [Agent] Analyzing {ticker}...")
 
             try:
-                output, reasoning, history_df = analyze_stock(ticker, is_auto=True)
+                analyze_stock(ticker, is_auto=True)
             except Exception as e:
                 logger.log(f"⚠️ [Agent] Error analyzing {ticker}: {e}", level="ERROR")
 
@@ -1352,7 +1447,7 @@ def deep_market_scan(progress=gr.Progress()):
                 pre_fetched_funds=funds_data,
                 pre_fetched_history=history_data,
             )
-            if data and data["Score"] >= 75:
+            if data and data["Score"] >= 60:
                 with _results_lock:
                     results.append(data)
                     _counter[0] += 1
@@ -1457,6 +1552,13 @@ with gr.Blocks(theme=custom_theme, js=theme_manager_js) as demo:
         with gr.Column(scale=1, min_width=150):
             theme_toggle_btn = gr.Button("🌙 Switch to Dark Mode", size="sm")
     
+    # ── ALPACA ACCOUNT PANEL ───────────────────────────────────────────────
+    with gr.Row():
+        alpaca_panel = gr.Markdown(render_alpaca_panel())
+    with gr.Row():
+        refresh_alpaca_btn = gr.Button("🔄 Refresh Account", size="sm", scale=0)
+    refresh_alpaca_btn.click(render_alpaca_panel, outputs=[alpaca_panel])
+
     # ── GLOBAL QUICK TRADE BAR (Alpaca Paper) ──────────────────────────────
     with gr.Accordion("⚡ Quick Trade (Alpaca Paper)", open=False):
         with gr.Row():
@@ -1466,33 +1568,39 @@ with gr.Blocks(theme=custom_theme, js=theme_manager_js) as demo:
             qt_tif = gr.Dropdown(choices=["Day", "GTC", "OPG", "IOC", "FOK"], value="GTC", label="Time in Force", scale=2)
         
         with gr.Row():
+            qt_sl = gr.Number(label="Stop Loss ($) — bracket", visible=True, scale=2)
+            qt_tp = gr.Number(label="Take Profit ($) — bracket", visible=True, scale=2)
+
+        with gr.Row():
             qt_limit = gr.Number(label="Limit Price ($)", visible=False, scale=2)
             qt_stop = gr.Number(label="Stop Price / Trail ($)", visible=False, scale=2)
             qt_buy = gr.Button("🟢 BUY", variant="primary", scale=2)
             qt_sell = gr.Button("🔴 SELL", variant="stop", scale=2)
-            
-        qt_status = gr.Markdown("*Ready.*")
-        
+
+        qt_status = gr.Markdown("*Ready. Fill SL + TP on a Market order to place a bracket; leave blank for a naked single order.*")
+
         # Dynamic visibility logic
         def update_price_inputs(order_type):
             show_limit = order_type in ["Limit", "Stop Limit"]
             show_stop = order_type in ["Stop", "Stop Limit", "Trailing Stop"]
-            
-            # Update button text to reflect order type
+            show_bracket = order_type == "Market"  # bracket only valid for Market entries
+
             buy_text = f"🟢 BUY {order_type.upper()}"
             sell_text = f"🔴 SELL {order_type.upper()}"
-            
+
             return (
-                gr.update(visible=show_limit), 
+                gr.update(visible=show_limit),
                 gr.update(visible=show_stop),
                 gr.update(value=buy_text),
-                gr.update(value=sell_text)
+                gr.update(value=sell_text),
+                gr.update(visible=show_bracket),
+                gr.update(visible=show_bracket),
             )
 
         qt_type.change(
-            update_price_inputs, 
-            inputs=[qt_type], 
-            outputs=[qt_limit, qt_stop, qt_buy, qt_sell]
+            update_price_inputs,
+            inputs=[qt_type],
+            outputs=[qt_limit, qt_stop, qt_buy, qt_sell, qt_sl, qt_tp]
         )
 
     with gr.Tabs():
@@ -1571,13 +1679,13 @@ with gr.Blocks(theme=custom_theme, js=theme_manager_js) as demo:
 
     # Attach Quick Trade handlers
     qt_buy.click(
-        handle_quick_trade, 
-        inputs=[qt_ticker, qt_shares, gr.State("buy"), qt_type, qt_tif, qt_limit, qt_stop], 
+        handle_quick_trade,
+        inputs=[qt_ticker, qt_shares, gr.State("buy"), qt_type, qt_tif, qt_limit, qt_stop, qt_sl, qt_tp],
         outputs=[qt_status]
     )
     qt_sell.click(
-        handle_quick_trade, 
-        inputs=[qt_ticker, qt_shares, gr.State("sell"), qt_type, qt_tif, qt_limit, qt_stop], 
+        handle_quick_trade,
+        inputs=[qt_ticker, qt_shares, gr.State("sell"), qt_type, qt_tif, qt_limit, qt_stop, qt_sl, qt_tp],
         outputs=[qt_status]
     )
 
@@ -1599,7 +1707,25 @@ with gr.Blocks(theme=custom_theme, js=theme_manager_js) as demo:
 
 if __name__ == "__main__":
     kill_port(7860)
-    # launch the app
-    demo.launch(inbrowser=False, server_port=7860, server_name="0.0.0.0", share=True)
+
+    # Safe defaults: bind to localhost, no public tunnel.
+    # Override via env: GRADIO_SHARE=1, GRADIO_SERVER_NAME=0.0.0.0, GRADIO_USER + GRADIO_PASSWORD.
+    share       = os.getenv("GRADIO_SHARE", "0") == "1"
+    server_name = os.getenv("GRADIO_SERVER_NAME", "127.0.0.1")
+    gr_user     = os.getenv("GRADIO_USER")
+    gr_pass     = os.getenv("GRADIO_PASSWORD")
+    auth        = (gr_user, gr_pass) if (gr_user and gr_pass) else None
+
+    if share and not auth:
+        logger.log("⚠️ GRADIO_SHARE=1 but no GRADIO_USER/GRADIO_PASSWORD set — "
+                   "the public tunnel will be unauthenticated.", level="WARNING")
+
+    demo.launch(
+        inbrowser=False,
+        server_port=7860,
+        server_name=server_name,
+        share=share,
+        auth=auth,
+    )
 
 
