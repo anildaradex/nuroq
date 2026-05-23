@@ -1,0 +1,24 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Sensitive / Configuration
+.env
+
+# Database and logs
+*.db
+*.log
+
+# OS-specific
+.DS_Store
+
+# Gradio / cached files
+.gradio/
+

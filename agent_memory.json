@@ -1,0 +1,42 @@
+{
+    "SOXL": [
+        {
+            "timestamp": "2026-04-26 20:36:42",
+            "rating": "SELL",
+            "score": 50,
+            "reasoning": "FINAL RATING: SELL, FINAL SCORE: 50"
+        }
+    ],
+    "SMCI": [
+        {
+            "timestamp": "2026-04-26 20:38:44",
+            "rating": "SELL",
+            "score": 50,
+            "reasoning": "RSI is overbought, indicating potential exhaustion. Trend is up, but volatility is high. Trend is up, RSI is overbought. Trend is up, RSI is overbought."
+        }
+    ],
+    "OPEN": [
+        {
+            "timestamp": "2026-04-26 20:39:05",
+            "rating": "SELL",
+            "score": 50,
+            "reasoning": "Strong trend, high volatility, overbought"
+        }
+    ],
+    "OGN": [
+        {
+            "timestamp": "2026-04-26 20:40:42",
+            "rating": "SELL",
+            "score": 50,
+            "reasoning": "RSI is overbought, suggesting potential exhaustion. Trend is up, but recent volatility is high. Trend is up, but recent volatility is high. Trend is up, but recent volatility is high."
+        }
+    ],
+    "QCOM": [
+        {
+            "timestamp": "2026-04-26 20:41:09",
+            "rating": "SELL",
+            "score": 50,
+            "reasoning": "RSI is overbought, suggesting potential exhaustion. Trend is up, but recent volatility is high. Trend is UP"
+        }
+    ]
+}

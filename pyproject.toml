@@ -1,0 +1,24 @@
+[project]
+name = "stock-ai-startup"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "gradio>=6.3.0",
+    "mlx-lm>=0.29.1",
+    "python-telegram-bot>=22.5",
+    "yfinance>=1.0",
+    "python-dotenv>=1.0.1",
+    "edgartools>=2.31.1",
+    "sentence-transformers>=3.3.1",
+    "numpy>=1.26.0",
+    "websocket-client>=1.9.0",
+    "matplotlib>=3.10.9",
+    "alpaca-py>=0.43.4",
+    "urllib3>=2.7.0",
+    "requests>=2.33.1",
+    "gtts>=2.5.4",
+    "tenacity>=9.1.4",
+    "plotly>=6.7.0",
+]

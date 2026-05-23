@@ -1,0 +1,135 @@
+Timestamp,Ticker,Name,Industry,Price,Technicals,Fundamentals,Signal,AI Score,Quant Score
+2026-04-26 23:11,NVDA,NVIDIA Corporation,Semiconductors,208.27,"STRONG UP, RSI:86.68, Vol:1.42x","P/E:42.58896, Growth:0.732",HOLD,55,53
+2026-04-26 23:11,SOXL,Direxion Daily Semiconductor Bull 3X Shares,N/A,128.32,"STRONG UP, RSI:99.01, Vol:0.96x","P/E:96.59293, Growth:N/A",SELL,50,27
+2026-04-26 23:12,AMD,"Advanced Micro Devices, Inc.",Semiconductors,347.81,"STRONG UP, RSI:97.44, Vol:2.11x","P/E:133.2567, Growth:0.341",HOLD,50,52
+2026-04-26 23:12,TQQQ,ProShares UltraPro QQQ,N/A,62.56,"STRONG UP, RSI:90.45, Vol:0.85x","P/E:45.69548, Growth:N/A",SELL,50,32
+2026-04-26 23:13,POET,POET Technologies Inc.,Semiconductors,15.1,"STRONG UP, RSI:84.75, Vol:3.25x","P/E:N/A, Growth:10.753",HOLD,50,52
+2026-04-26 23:13,WU,The Western Union Company,Credit Services,8.9,"WEAK DOWN, RSI:53.66, Vol:5.4x","P/E:5.8552628, Growth:-0.001",HOLD,50,47
+2026-04-26 23:14,HIMS,"Hims & Hers Health, Inc.",Drug Manufacturers - Specialty & Generic,30.56,"STRONG UP, RSI:77.69, Vol:1.25x","P/E:59.92157, Growth:0.284",HOLD,50,42
+2026-04-26 23:15,ENVB,"Enveric Biosciences, Inc.",Biotechnology,5.04,"STRONG UP, RSI:80.85, Vol:3.77x","P/E:N/A, Growth:N/A",SELL,50,37
+2026-04-26 23:15,SMCI,"Super Micro Computer, Inc.",Computer Hardware,29.08,"STRONG UP, RSI:77.14, Vol:1.22x","P/E:21.226276, Growth:1.234",HOLD,50,57
+2026-04-26 23:16,OPEN,Opendoor Technologies Inc.,Real Estate Services,5.51,"STRONG UP, RSI:71.03, Vol:1.04x","P/E:N/A, Growth:-0.321",SELL,50,37
+2026-04-26 23:16,EOSE,"Eos Energy Enterprises, Inc.",Electrical Equipment & Parts,7.67,"STRONG UP, RSI:76.75, Vol:1.29x","P/E:N/A, Growth:6.996",HOLD,50,47
+2026-04-26 23:17,OGN,Organon & Co.,Drug Manufacturers - General,11.26,"STRONG UP, RSI:78.22, Vol:3.52x","P/E:15.638888, Growth:-0.053",HOLD,50,47
+2026-04-26 23:17,QCOM,QUALCOMM Incorporated,Semiconductors,148.85,"STRONG UP, RSI:83.41, Vol:2.79x","P/E:30.010082, Growth:0.05",SELL,50,37
+2026-04-26 23:18,MXL,"MaxLinear, Inc.",Semiconductors,60.32,"STRONG UP, RSI:99.9, Vol:7.73x","P/E:N/A, Growth:0.43",HOLD,50,52
+2026-04-26 23:19,SOUN,"SoundHound AI, Inc.",Software - Application,8.19,"STRONG UP, RSI:67.53, Vol:1.14x","P/E:N/A, Growth:0.594",HOLD,50,52
+2026-04-26 23:19,ATOM,Atomera Incorporated,Semiconductor Equipment & Materials,8.6,"STRONG UP, RSI:84.81, Vol:12.56x","P/E:N/A, Growth:1.174",HOLD,50,52
+2026-04-26 23:19,NVO,Novo Nordisk A/S,Drug Manufacturers - General,41.17,"STRONG UP, RSI:73.29, Vol:1.55x","P/E:11.404432, Growth:-0.076",HOLD,25,52
+2026-04-26 23:20,AMDL,GraniteShares 2x Long AMD Daily ETF,N/A,34.3,"STRONG UP, RSI:97.35, Vol:2.11x","P/E:N/A, Growth:N/A",SELL,50,37
+2026-04-26 23:20,SLB,SLB N.V.,Oil & Gas Equipment & Services,56.15,"STRONG UP, RSI:79.57, Vol:1.44x","P/E:24.735683, Growth:0.027",HOLD,50,47
+2026-04-26 23:21,ARM,Arm Holdings plc,Semiconductors,234.81,"STRONG UP, RSI:92.45, Vol:2.45x","P/E:313.08, Growth:0.263",HOLD,50,47
+2026-04-26 23:22,CLF,Cleveland-Cliffs Inc.,Steel,9.76,"STRONG UP, RSI:65.19, Vol:1.22x","P/E:N/A, Growth:0.063",HOLD,50,42
+2026-04-26 23:22,DKNG,DraftKings Inc.,Gambling,23.18,"STRONG UP, RSI:51.95, Vol:1.38x","P/E:N/A, Growth:0.428",HOLD,50,49
+2026-04-26 23:23,BKR,Baker Hughes Company,Oil & Gas Equipment & Services,68.94,"STRONG UP, RSI:73.15, Vol:1.84x","P/E:22.025558, Growth:0.025",HOLD,50,57
+2026-04-26 23:23,KDP,Keurig Dr Pepper Inc.,Beverages - Non-Alcoholic,29.22,"STRONG UP, RSI:83.21, Vol:1.29x","P/E:21.644444, Growth:0.094",HOLD,65,50
+2026-04-26 23:24,MBLY,Mobileye Global Inc.,Auto Parts,9.23,"STRONG UP, RSI:82.93, Vol:1.93x","P/E:N/A, Growth:0.274",HOLD,50,47
+2026-04-26 23:24,AAOI,"Applied Optoelectronics, Inc.",Communication Equipment,162.17,"STRONG UP, RSI:71.46, Vol:1.11x","P/E:N/A, Growth:0.339",HOLD,50,52
+2026-04-26 23:25,CRML,Critical Metals Corp.,Other Industrial Metals & Mining,11.51,"STRONG UP, RSI:65.0, Vol:0.98x","P/E:N/A, Growth:0.578",HOLD,50,52
+2026-04-26 23:25,META,"Meta Platforms, Inc.",Internet Content & Information,675.03,"STRONG UP, RSI:79.56, Vol:0.81x","P/E:28.73776, Growth:0.238",SELL,50,37
+2026-04-26 23:26,NVDX,T-Rex 2X Long NVIDIA Daily Target ETF,N/A,19.53,"STRONG UP, RSI:85.14, Vol:0.89x","P/E:49.893597, Growth:N/A",SELL,50,32
+2026-04-26 23:26,NEM,Newmont Corporation,Gold,120.7,"STRONG UP, RSI:58.71, Vol:1.47x","P/E:15.654993, Growth:0.458",HOLD,50,67
+2026-04-26 23:27,TOST,"Toast, Inc.",Software - Infrastructure,29.04,"STRONG UP, RSI:60.16, Vol:1.33x","P/E:51.857143, Growth:0.22",HOLD,50,52
+2026-04-26 23:27,RBLX,Roblox Corporation,Electronic Gaming & Multimedia,56.09,"WEAK DOWN, RSI:46.64, Vol:1.36x","P/E:N/A, Growth:0.432",SELL,50,32
+2026-04-26 23:28,EW,Edwards Lifesciences Corporation,Medical Devices,84.15,"STRONG UP, RSI:58.03, Vol:2.21x","P/E:46.491714, Growth:0.167",HOLD,50,62
+2026-04-26 23:29,SLM,SLM Corporation,Credit Services,23.83,"STRONG UP, RSI:66.6, Vol:3.02x","P/E:6.6194444, Growth:0.025",HOLD,50,62
+2026-04-26 23:29,SNDK,Sandisk Corporation,Computer Hardware,989.9,"STRONG UP, RSI:74.44, Vol:0.71x","P/E:N/A, Growth:0.612",SELL,50,37
+2026-04-26 23:30,NVDL,GraniteShares 2x Long NVDA Daily ETF,N/A,102.22,"STRONG UP, RSI:86.01, Vol:1.49x","P/E:N/A, Growth:N/A",SELL,50,32
+2026-04-26 23:31,GLW,Corning Incorporated,Electronic Components,175.89,"STRONG UP, RSI:78.83, Vol:1.01x","P/E:96.11475, Growth:0.204",SELL,50,32
+2026-04-26 23:40,PTON,"Peloton Interactive, Inc.",Leisure,5.18,"STRONG UP, RSI:66.46, Vol:0.66x","P/E:N/A, Growth:-0.026",SELL,75,37
+2026-04-26 23:41,LUV,Southwest Airlines Co.,Airlines,39.45,"STRONG UP, RSI:54.01, Vol:1.17x","P/E:26.300001, Growth:0.128",HOLD,50,54
+2026-04-26 23:46,U,Unity Software Inc.,Software - Application,26.01,"STRONG UP, RSI:68.89, Vol:0.58x","P/E:N/A, Growth:0.101",HOLD,50,42
+2026-04-26 23:47,WOLF,"Wolfspeed, Inc.",Semiconductors,31.23,"STRONG UP, RSI:78.02, Vol:2.56x","P/E:N/A, Growth:-0.066",SELL,50,37
+2026-04-26 23:47,TRT,Trio-Tech International,Semiconductor Equipment & Materials,16.52,"STRONG UP, RSI:91.87, Vol:3.82x","P/E:N/A, Growth:0.816",HOLD,50,52
+2026-04-26 23:48,CWH,"Camping World Holdings, Inc.",Auto & Truck Dealerships,7.48,"STRONG UP, RSI:64.38, Vol:2.26x","P/E:N/A, Growth:-0.026",SELL,50,29
+2026-04-27 00:03,WEN,The Wendy's Company,Restaurants,7.14,"STRONG UP, RSI:51.43, Vol:1.02x","P/E:8.4, Growth:-0.055",HOLD,50,49
+2026-04-27 00:04,MX,Magnachip Semiconductor Corporation,Semiconductors,5.25,"STRONG UP, RSI:93.43, Vol:7.38x","P/E:N/A, Growth:-0.207",SELL,50,27
+2026-04-27 00:04,GTM,ZoomInfo Technologies Inc.,Software - Application,6.13,"STRONG UP, RSI:53.58, Vol:0.71x","P/E:16.118422, Growth:0.032",HOLD,50,52
+2026-04-27 00:05,AKAN,Akanda Corp.,Drug Manufacturers - Specialty & Generic,12.23,"STRONG UP, RSI:86.92, Vol:1.78x","P/E:0.017551664, Growth:N/A",HOLD,50,52
+2026-04-27 00:22,SNXX,Tradr 2X Long Sndk Daily ETF,N/A,83.49,"STRONG UP, RSI:72.49, Vol:0.74x","P/E:N/A, Growth:N/A",SELL,50,32
+2026-04-27 00:23,ASAN,"Asana, Inc.",Software - Application,6.39,"STRONG UP, RSI:52.34, Vol:0.97x","P/E:N/A, Growth:0.092",SELL,75,39
+2026-04-27 00:23,FNGU,FNGU,N/A,24.71,"STRONG UP, RSI:82.11, Vol:0.9x","P/E:1.8196425, Growth:N/A",HOLD,50,42
+2026-04-27 00:24,MSFU,Direxion Daily MSFT Bull 2X Shares,N/A,29.88,"STRONG UP, RSI:73.79, Vol:0.98x","P/E:31.618021, Growth:N/A",SELL,50,37
+2026-04-27 00:24,NCNO,"nCino, Inc.",Software - Application,17.68,"STRONG UP, RSI:52.86, Vol:1.68x","P/E:353.6, Growth:0.059",HOLD,85,59
+2026-04-27 00:25,ALAB,"Astera Labs, Inc.",Semiconductors,212.84,"STRONG UP, RSI:98.69, Vol:1.17x","P/E:175.90082, Growth:0.918",HOLD,50,47
+2026-04-27 00:25,CRDO,Credo Technology Group Holding Ltd,Semiconductors,195.04,"STRONG UP, RSI:87.37, Vol:0.89x","P/E:107.756905, Growth:2.015",HOLD,50,42
+2026-04-27 00:26,ADBE,Adobe Inc.,Software - Application,245.44,"STRONG UP, RSI:50.59, Vol:1.22x","P/E:14.303031, Growth:0.12",HOLD,50,59
+2026-04-27 00:26,LPTH,"LightPath Technologies, Inc.",Electronic Components,16.09,"STRONG UP, RSI:77.91, Vol:2.63x","P/E:N/A, Growth:1.202",HOLD,50,52
+2026-04-27 00:27,BKNG,Booking Holdings Inc.,Travel Services,180.25,"STRONG UP, RSI:53.53, Vol:0.88x","P/E:27.231873, Growth:0.16",HOLD,50,47
+2026-04-27 00:28,GTLB,GitLab Inc.,Software - Infrastructure,21.51,"STRONG UP, RSI:44.01, Vol:1.01x","P/E:N/A, Growth:0.232",HOLD,50,44
+2026-04-27 00:28,BFLY,"Butterfly Network, Inc.",Medical Devices,5.33,"STRONG UP, RSI:76.32, Vol:1.28x","P/E:N/A, Growth:0.41",SELL,50,37
+2026-04-27 00:29,PD,"PagerDuty, Inc.",Software - Application,7.13,"STRONG UP, RSI:56.72, Vol:2.25x","P/E:3.8128343, Growth:0.027",HOLD,50,67
+2026-04-27 00:29,PANW,"Palo Alto Networks, Inc.",Software - Infrastructure,178.54,"STRONG UP, RSI:61.76, Vol:0.73x","P/E:99.18889, Growth:0.149",HOLD,50,47
+2026-04-27 00:30,DOCS,"Doximity, Inc.",Health Information Services,24.01,"STRONG UP, RSI:55.23, Vol:1.73x","P/E:20.17647, Growth:0.098",HOLD,50,54
+2026-04-27 00:31,LITX,Tradr 2X Long Lite Daily ETF,N/A,43.7,"STRONG UP, RSI:60.87, Vol:1.0x","P/E:N/A, Growth:N/A",SELL,50,37
+2026-04-27 00:31,ESI,Element Solutions Inc,Specialty Chemicals,40.34,"STRONG UP, RSI:81.01, Vol:1.99x","P/E:51.06329, Growth:0.083",SELL,50,32
+2026-04-27 00:32,TEAM,Atlassian Corporation,Software - Application,71.55,"STRONG UP, RSI:53.81, Vol:0.68x","P/E:N/A, Growth:0.233",SELL,50,29
+2026-04-27 00:32,SMCX,Defiance Daily Target 2X Long SMCI ETF,N/A,13.09,"STRONG UP, RSI:73.99, Vol:1.26x","P/E:N/A, Growth:N/A",SELL,50,29
+2026-04-27 00:33,ARMG,Leverage Shares 2X Long ARM Daily ETF,N/A,22.3,"STRONG UP, RSI:93.42, Vol:3.23x","P/E:N/A, Growth:N/A",SELL,50,37
+2026-04-27 00:33,RMBS,Rambus Inc.,Semiconductors,158.4,"STRONG UP, RSI:96.99, Vol:2.12x","P/E:75.07109, Growth:0.181",SELL,50,37
+2026-04-27 00:34,CC,The Chemours Company,Specialty Chemicals,26.61,"STRONG UP, RSI:79.12, Vol:1.74x","P/E:N/A, Growth:-0.021",SELL,50,37
+2026-04-27 00:35,LITE,Lumentum Holdings Inc.,Communication Equipment,881.64,"STRONG UP, RSI:62.73, Vol:0.72x","P/E:256.2907, Growth:0.655",HOLD,50,52
+2026-04-27 00:35,ZETA,Zeta Global Holdings Corp.,Software - Infrastructure,17.53,"STRONG UP, RSI:62.39, Vol:0.59x","P/E:N/A, Growth:0.254",SELL,50,37
+2026-04-27 00:36,NDAQ,"Nasdaq, Inc.",Financial Data & Stock Exchanges,89.9,"STRONG UP, RSI:55.04, Vol:1.32x","P/E:27.078314, Growth:0.137",HOLD,50,62
+2026-04-27 00:36,AAOX,Tradr 2X Long AAOI Daily ETF,N/A,58,"STRONG UP, RSI:68.35, Vol:1.96x","P/E:N/A, Growth:N/A",SELL,50,34
+2026-04-27 00:37,VVV,Valvoline Inc.,Auto & Truck Dealerships,33.23,"WEAK DOWN, RSI:46.89, Vol:2.18x","P/E:48.15942, Growth:0.115",HOLD,50,47
+2026-04-27 00:37,BBIO,"BridgeBio Pharma, Inc.",Biotechnology,73.28,"WEAK DOWN, RSI:53.11, Vol:2.3x","P/E:N/A, Growth:25.212",HOLD,50,44
+2026-04-27 00:38,HIMX,"Himax Technologies, Inc.",Semiconductors,12.09,"STRONG UP, RSI:79.56, Vol:1.52x","P/E:46.500004, Growth:-0.144",HOLD,50,42
+2026-04-27 00:38,TROX,Tronox Holdings plc,Chemicals,10.12,"STRONG UP, RSI:61.89, Vol:1.44x","P/E:N/A, Growth:0.08",HOLD,50,47
+2026-04-27 00:39,COLD,"Americold Realty Trust, Inc.",REIT - Industrial,12.83,"STRONG UP, RSI:69.44, Vol:0.96x","P/E:N/A, Growth:-0.012",SELL,50,32
+2026-04-27 00:39,BROS,Dutch Bros Inc.,Restaurants,57.44,"STRONG UP, RSI:61.02, Vol:0.92x","P/E:89.75, Growth:0.294",HOLD,50,47
+2026-04-27 00:40,AMZU,Direxion Daily AMZN Bull 2X Shares,N/A,42.48,"STRONG UP, RSI:94.21, Vol:1.41x","P/E:44.65206, Growth:N/A",SELL,50,37
+2026-04-27 00:40,FLUT,Flutter Entertainment plc,Gambling,111.57,"STRONG UP, RSI:59.39, Vol:1.29x","P/E:N/A, Growth:0.249",HOLD,65,55
+2026-04-27 00:41,TAL,TAL Education Group,Education & Training Services,11.24,"WEAK DOWN, RSI:49.57, Vol:1.03x","P/E:12.217391, Growth:0.315",HOLD,50,64
+2026-04-27 00:41,NTNX,"Nutanix, Inc.",Software - Infrastructure,40.56,"STRONG UP, RSI:53.09, Vol:1.12x","P/E:44.086956, Growth:0.104",HOLD,75,62
+2026-04-27 00:42,FLEX,Flex Ltd.,Electronic Components,91.41,"STRONG UP, RSI:93.7, Vol:1.08x","P/E:40.99103, Growth:0.077",HOLD,50,42
+2026-04-27 00:42,CEG,Constellation Energy Corporation,Utilities - Independent Power Producers,313.53,"STRONG UP, RSI:69.53, Vol:1.23x","P/E:42.36622, Growth:0.129",HOLD,50,52
+2026-04-27 00:43,BIDU,"Baidu, Inc.",Internet Content & Information,128.71,"STRONG UP, RSI:70.86, Vol:1.85x","P/E:74.8314, Growth:-0.041",HOLD,50,42
+2026-04-27 00:43,FTI,TechnipFMC plc,Oil & Gas Equipment & Services,74.76,"STRONG UP, RSI:59.08, Vol:1.05x","P/E:32.50435, Growth:0.063",HOLD,50,42
+2026-04-27 00:44,VST,Vistra Corp.,Utilities - Independent Power Producers,164.35,"STRONG UP, RSI:65.07, Vol:0.97x","P/E:75.04566, Growth:0.136",HOLD,50,42
+2026-04-27 00:44,KLAR,KLAR,Software - Infrastructure,14.07,"STRONG UP, RSI:58.21, Vol:0.65x","P/E:N/A, Growth:0.384",HOLD,50,52
+2026-04-27 00:45,MTCH,MTCH,Internet Content & Information,36.75,"STRONG UP, RSI:75.19, Vol:1.03x","P/E:15.441175, Growth:0.021",HOLD,65,50
+2026-04-27 00:45,CDNS,"Cadence Design Systems, Inc.",Software - Application,332.89,"STRONG UP, RSI:69.71, Vol:1.48x","P/E:81.992615, Growth:0.062",SELL,50,32
+2026-04-27 00:46,CERT,"Certara, Inc.",Health Information Services,6.32,"STRONG UP, RSI:70.48, Vol:0.79x","P/E:N/A, Growth:0.033",SELL,50,37
+2026-04-27 00:46,SE,Sea Limited,Internet Retail,85.44,"STRONG UP, RSI:56.97, Vol:0.9x","P/E:33.904762, Growth:0.384",HOLD,50,49
+2026-04-27 00:47,OSCR,"Oscar Health, Inc.",Healthcare Plans,16.81,"STRONG UP, RSI:87.71, Vol:0.52x","P/E:N/A, Growth:0.173",SELL,50,37
+2026-04-27 00:47,TER,"Teradyne, Inc.",Semiconductor Equipment & Materials,418.08,"STRONG UP, RSI:91.62, Vol:1.18x","P/E:120.484146, Growth:0.439",SELL,50,37
+2026-04-27 00:48,STUB,"StubHub Holdings, Inc.",Internet Content & Information,7.15,"STRONG UP, RSI:68.15, Vol:0.84x","P/E:N/A, Growth:-0.158",SELL,50,24
+2026-04-27 00:49,TRIP,"Tripadvisor, Inc.",Travel Services,11.19,"STRONG UP, RSI:54.97, Vol:0.82x","P/E:36.09677, Growth:0.0",HOLD,50,42
+2026-04-27 00:49,JEF,Jefferies Financial Group Inc.,Capital Markets,47.46,"STRONG UP, RSI:74.05, Vol:1.47x","P/E:15.926174, Growth:0.266",HOLD,50,57
+2026-04-27 00:50,ACHC,"Acadia Healthcare Company, Inc.",Medical Care Facilities,27.38,"STRONG UP, RSI:67.32, Vol:1.08x","P/E:N/A, Growth:0.061",SELL,50,32
+2026-04-27 00:50,OUST,"Ouster, Inc.",Electronic Components,28.22,"STRONG UP, RSI:85.33, Vol:1.51x","P/E:N/A, Growth:1.066",HOLD,50,52
+2026-04-27 07:27,NVDA,NVIDIA Corporation,Semiconductors,208.27,"STRONG UP, RSI:86.68, Vol:1.42x","P/E:42.58896, Growth:0.732",HOLD,55,53
+2026-04-27 07:27,SOXL,Direxion Daily Semiconductor Bull 3X Shares,N/A,128.32,"STRONG UP, RSI:99.01, Vol:0.96x","P/E:96.59293, Growth:N/A",SELL,50,27
+2026-04-27 07:28,AMD,"Advanced Micro Devices, Inc.",Semiconductors,347.81,"STRONG UP, RSI:97.44, Vol:2.11x","P/E:133.2567, Growth:0.341",HOLD,50,52
+2026-04-27 07:28,TQQQ,ProShares UltraPro QQQ,N/A,62.56,"STRONG UP, RSI:90.45, Vol:0.85x","P/E:45.69548, Growth:N/A",SELL,50,32
+2026-04-27 07:29,POET,POET Technologies Inc.,Semiconductors,15.1,"STRONG UP, RSI:84.75, Vol:3.25x","P/E:N/A, Growth:10.753",HOLD,50,52
+2026-04-27 07:29,WU,The Western Union Company,Credit Services,8.9,"WEAK DOWN, RSI:53.66, Vol:5.4x","P/E:5.8552628, Growth:-0.001",HOLD,50,47
+2026-04-30 18:54,AAPL,Apple Inc.,Consumer Electronics,270.17,"STRONG UP, RSI:60.63, Vol:0.73x","P/E:34.391636, Growth:0.157",HOLD,85,49
+2026-04-30 18:54,NVDA,NVIDIA Corporation,Semiconductors,209.25,"STRONG UP, RSI:74.76, Vol:0.85x","P/E:40.728573, Growth:0.732",HOLD,50,52
+2026-04-30 18:55,INTC,Intel Corporation,Semiconductors,94.75,"STRONG UP, RSI:87.29, Vol:1.73x","P/E:N/A, Growth:0.072",HOLD,50,42
+2026-04-30 18:56,NOK,Nokia Oyj,Communication Equipment,12.46,"STRONG UP, RSI:77.3, Vol:1.58x","P/E:80.6875, Growth:0.024",HOLD,50,42
+2026-04-30 18:56,SOXL,Direxion Daily Semiconductor Bull 3X Shares,N/A,117.97,"STRONG UP, RSI:77.54, Vol:0.71x","P/E:95.58424, Growth:N/A",SELL,50,27
+2026-05-10 09:31,AAPL,Apple Inc.,Consumer Electronics,293.32,"STRONG UP, RSI:68.94, Vol:1.08x","P/E:35.467957, Growth:0.166",HOLD,50,52
+2026-05-10 09:32,NVDA,NVIDIA Corporation,Semiconductors,215.2,"STRONG UP, RSI:60.35, Vol:0.91x","P/E:43.828922, Growth:0.732",HOLD,50,57
+2026-05-10 09:58,INTC,Intel Corporation,Semiconductors,124.92,"STRONG UP, RSI:88.38, Vol:1.54x","P/E:N/A, Growth:0.072",SELL,50,17
+2026-05-10 09:58,RXT,"Rackspace Technology, Inc.",Software - Infrastructure,5.49,"STRONG UP, RSI:90.89, Vol:6.57x","P/E:N/A, Growth:0.019",SELL,50,17
+2026-05-10 09:59,TSLL,Direxion Daily TSLA Bull 2X Shares,N/A,15.62,"STRONG UP, RSI:68.76, Vol:1.2x","P/E:75.02103, Growth:N/A",SELL,50,17
+2026-05-10 09:59,NOK,Nokia Oyj,Communication Equipment,12.82,"STRONG UP, RSI:68.02, Vol:0.85x","P/E:80.125, Growth:0.024",SELL,95,22
+2026-05-10 10:00,RKLB,Rocket Lab Corporation,Aerospace & Defense,105.47,"STRONG UP, RSI:60.6, Vol:3.23x","P/E:N/A, Growth:0.635",HOLD,50,47
+2026-05-10 10:00,POET,POET Technologies Inc.,Semiconductors,10.95,"STRONG UP, RSI:55.29, Vol:1.31x","P/E:N/A, Growth:10.753",SELL,50,32
+2026-05-10 10:01,TQQQ,ProShares UltraPro QQQ,N/A,76.28,"STRONG UP, RSI:84.24, Vol:0.9x","P/E:39.104355, Growth:N/A",SELL,50,12
+2026-05-10 18:59,NVDA,NVIDIA Corporation,Semiconductors,215.2,"STRONG UP, RSI:60.35, Vol:0.91x","P/E:43.832382, Growth:0.732",HOLD,50,47
+2026-05-10 19:20,NVDA,NVIDIA Corporation,Semiconductors,215.2,"STRONG UP, RSI:60.35, Vol:0.91x","P/E:43.832382, Growth:0.732",HOLD,50,47
+2026-05-10 19:29,AAPL,Apple Inc.,Consumer Electronics,293.32,"STRONG UP, RSI:68.94, Vol:1.08x","P/E:35.460335, Growth:0.166",SELL,50,37
+2026-05-10 19:35,AAPL,Apple Inc.,Consumer Electronics,293.32,"STRONG UP, RSI:68.94, Vol:1.08x","P/E:35.460335, Growth:0.166",SELL,50,37
+2026-05-10 19:38,GOOG,Alphabet Inc.,Internet Content & Information,397.05,"STRONG UP, RSI:88.01, Vol:0.75x","P/E:30.309158, Growth:0.218",SELL,50,22
+2026-05-10 20:17,AAPL,Apple Inc.,Consumer Electronics,293.32,"STRONG UP, RSI:68.94, Vol:1.08x","P/E:35.460335, Growth:0.166",SELL,50,37
+2026-05-10 21:00,NVDA,NVIDIA Corporation,Semiconductors,215.2,"STRONG UP, RSI:60.35, Vol:0.91x","P/E:43.832382, Growth:0.732",HOLD,50,47
+2026-05-10 21:05,V,Visa Inc.,Credit Services,318.79,"STRONG UP, RSI:54.37, Vol:0.82x","P/E:27.769165, Growth:0.171",HOLD,50,52
+2026-05-10 22:01,NVDA,NVIDIA Corporation,Semiconductors,215.2,"STRONG UP, RSI:60.35, Vol:0.91x","P/E:43.832382, Growth:0.732",HOLD,50,47
+2026-05-10 22:11,AMD,"Advanced Micro Devices, Inc.",Semiconductors,455.19,"STRONG UP, RSI:80.73, Vol:1.24x","P/E:151.73, Growth:0.378",SELL,50,22
+2026-05-10 22:33,AAPL,Apple Inc.,Consumer Electronics,293.32,"STRONG UP, RSI:68.94, Vol:1.08x","P/E:35.460335, Growth:0.166",SELL,50,37
+2026-05-11 19:15,AMD,"Advanced Micro Devices, Inc.",Semiconductors,455.19,"STRONG UP, RSI:80.73, Vol:1.24x","P/E:152.93001, Growth:0.378",SELL,50,22
+2026-05-11 21:27,AAPL,Apple Inc.,Consumer Electronics,293.32,"STRONG UP, RSI:68.94, Vol:1.08x","P/E:35.476364, Growth:0.166",SELL,50,37
+2026-05-11 21:31,NVDA,NVIDIA Corporation,Semiconductors,215.2,"STRONG UP, RSI:60.35, Vol:0.91x","P/E:44.875256, Growth:0.732",HOLD,50,47

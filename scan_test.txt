@@ -1,0 +1,917 @@
+[2026-05-19 21:16:27,433] [INFO] HTTP Request: GET https://huggingface.co/api/models/mlx-community/DeepSeek-R1-Distill-Qwen-7B-4bit/revision/main "HTTP/1.1 200 OK"
+[2026-05-19 21:16:27] [INFO] 🚀 Loading DEEPSEEK model...
+Fetching 6 files:   0%|          | 0/6 [00:00<?, ?it/s]Fetching 6 files: 100%|██████████| 6/6 [00:00<00:00, 187804.66it/s]
+[2026-05-19 21:16:29,887] [INFO] 🔌 Connected to Alpaca Paper Trading. Status: ACTIVE
+[2026-05-19 21:16:30,374] [INFO] Identity of the Edgar REST client set to [Anil Dara anil@example.com]
+[2026-05-19 21:16:30,380] [INFO] No device provided, using mps
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+[2026-05-19 21:16:30,461] [WARNING] Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+[2026-05-19 21:16:30,647] [INFO] Loading SentenceTransformer model from sentence-transformers/all-MiniLM-L6-v2.
+🧠 Initializing RAG Model (all-MiniLM-L6-v2)...
+Loading weights:   0%|          | 0/103 [00:00<?, ?it/s]Loading weights: 100%|██████████| 103/103 [00:00<00:00, 8620.10it/s]
+/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/dashboard.py:1446: UserWarning: The parameters have been moved from the Blocks constructor to the launch() method in Gradio 6.0: theme, js. Please pass these parameters to launch() instead.
+  with gr.Blocks(theme=custom_theme, js=theme_manager_js) as demo:
+[2026-05-19 21:16:33,186] [INFO] Application started
+[2026-05-19 21:16:37,890] [ERROR] Exception happened while polling for updates.
+Traceback (most recent call last):
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 161, in network_retry_loop
+    await do_action()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 154, in do_action
+    action_cb_task.result()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_updater.py", line 340, in polling_action_cb
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 672, in get_updates
+    updates = await super().get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 4865, in get_updates
+    await self._post(
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 704, in _post
+    return await self._do_post(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 370, in _do_post
+    return await super()._do_post(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 733, in _do_post
+    result = await request.post(
+             ^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 198, in post
+    result = await self._request_wrapper(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 375, in _request_wrapper
+    raise exception
+telegram.error.Conflict: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-05-19 21:16:43,665] [ERROR] Exception happened while polling for updates.
+Traceback (most recent call last):
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 161, in network_retry_loop
+    await do_action()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 154, in do_action
+    action_cb_task.result()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_updater.py", line 340, in polling_action_cb
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 672, in get_updates
+    updates = await super().get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 4865, in get_updates
+    await self._post(
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 704, in _post
+    return await self._do_post(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 370, in _do_post
+    return await super()._do_post(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 733, in _do_post
+    result = await request.post(
+             ^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 198, in post
+    result = await self._request_wrapper(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 375, in _request_wrapper
+    raise exception
+telegram.error.Conflict: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-05-19 21:16:50,792] [ERROR] Exception happened while polling for updates.
+Traceback (most recent call last):
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 161, in network_retry_loop
+    await do_action()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 154, in do_action
+    action_cb_task.result()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_updater.py", line 340, in polling_action_cb
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 672, in get_updates
+    updates = await super().get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 4865, in get_updates
+    await self._post(
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 704, in _post
+    return await self._do_post(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 370, in _do_post
+    return await super()._do_post(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 733, in _do_post
+    result = await request.post(
+             ^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 198, in post
+    result = await self._request_wrapper(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 375, in _request_wrapper
+    raise exception
+telegram.error.Conflict: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-05-19 21:16:56,682] [ERROR] Exception happened while polling for updates.
+Traceback (most recent call last):
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 161, in network_retry_loop
+    await do_action()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 154, in do_action
+    action_cb_task.result()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_updater.py", line 340, in polling_action_cb
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 672, in get_updates
+    updates = await super().get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 4865, in get_updates
+    await self._post(
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 704, in _post
+    return await self._do_post(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 370, in _do_post
+    return await super()._do_post(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 733, in _do_post
+    result = await request.post(
+             ^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 198, in post
+    result = await self._request_wrapper(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 375, in _request_wrapper
+    raise exception
+telegram.error.Conflict: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-05-19 21:17:05,647] [ERROR] Exception happened while polling for updates.
+Traceback (most recent call last):
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 161, in network_retry_loop
+    await do_action()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 154, in do_action
+    action_cb_task.result()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_updater.py", line 340, in polling_action_cb
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 672, in get_updates
+    updates = await super().get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 4865, in get_updates
+    await self._post(
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 704, in _post
+    return await self._do_post(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 370, in _do_post
+    return await super()._do_post(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 733, in _do_post
+    result = await request.post(
+             ^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 198, in post
+    result = await self._request_wrapper(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 375, in _request_wrapper
+    raise exception
+telegram.error.Conflict: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-05-19 21:17:19,074] [ERROR] Exception happened while polling for updates.
+Traceback (most recent call last):
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 161, in network_retry_loop
+    await do_action()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 154, in do_action
+    action_cb_task.result()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_updater.py", line 340, in polling_action_cb
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 672, in get_updates
+    updates = await super().get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 4865, in get_updates
+    await self._post(
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 704, in _post
+    return await self._do_post(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 370, in _do_post
+    return await super()._do_post(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 733, in _do_post
+    result = await request.post(
+             ^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 198, in post
+    result = await self._request_wrapper(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 375, in _request_wrapper
+    raise exception
+telegram.error.Conflict: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-05-19 21:17:38,822] [ERROR] Exception happened while polling for updates.
+Traceback (most recent call last):
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 161, in network_retry_loop
+    await do_action()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 154, in do_action
+    action_cb_task.result()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_updater.py", line 340, in polling_action_cb
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 672, in get_updates
+    updates = await super().get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 4865, in get_updates
+    await self._post(
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 704, in _post
+    return await self._do_post(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 370, in _do_post
+    return await super()._do_post(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 733, in _do_post
+    result = await request.post(
+             ^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 198, in post
+    result = await self._request_wrapper(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 375, in _request_wrapper
+    raise exception
+telegram.error.Conflict: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-05-19 21:18:00,503] [ERROR] Exception happened while polling for updates.
+Traceback (most recent call last):
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 161, in network_retry_loop
+    await do_action()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 154, in do_action
+    action_cb_task.result()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_updater.py", line 340, in polling_action_cb
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 672, in get_updates
+    updates = await super().get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 4865, in get_updates
+    await self._post(
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 704, in _post
+    return await self._do_post(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 370, in _do_post
+    return await super()._do_post(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 733, in _do_post
+    result = await request.post(
+             ^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 198, in post
+    result = await self._request_wrapper(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 375, in _request_wrapper
+    raise exception
+telegram.error.Conflict: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-05-19 21:18:30,704] [ERROR] Exception happened while polling for updates.
+Traceback (most recent call last):
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 161, in network_retry_loop
+    await do_action()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 154, in do_action
+    action_cb_task.result()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_updater.py", line 340, in polling_action_cb
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 672, in get_updates
+    updates = await super().get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 4865, in get_updates
+    await self._post(
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 704, in _post
+    return await self._do_post(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 370, in _do_post
+    return await super()._do_post(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 733, in _do_post
+    result = await request.post(
+             ^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 198, in post
+    result = await self._request_wrapper(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 375, in _request_wrapper
+    raise exception
+telegram.error.Conflict: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-05-19 21:19:05,231] [ERROR] Exception happened while polling for updates.
+Traceback (most recent call last):
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 161, in network_retry_loop
+    await do_action()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 154, in do_action
+    action_cb_task.result()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_updater.py", line 340, in polling_action_cb
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 672, in get_updates
+    updates = await super().get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 4865, in get_updates
+    await self._post(
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 704, in _post
+    return await self._do_post(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 370, in _do_post
+    return await super()._do_post(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 733, in _do_post
+    result = await request.post(
+             ^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 198, in post
+    result = await self._request_wrapper(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 375, in _request_wrapper
+    raise exception
+telegram.error.Conflict: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-05-19 21:19:39,747] [ERROR] Exception happened while polling for updates.
+Traceback (most recent call last):
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 161, in network_retry_loop
+    await do_action()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 154, in do_action
+    action_cb_task.result()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_updater.py", line 340, in polling_action_cb
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 672, in get_updates
+    updates = await super().get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 4865, in get_updates
+    await self._post(
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 704, in _post
+    return await self._do_post(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 370, in _do_post
+    return await super()._do_post(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 733, in _do_post
+    result = await request.post(
+             ^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 198, in post
+    result = await self._request_wrapper(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 375, in _request_wrapper
+    raise exception
+telegram.error.Conflict: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-05-19 21:20:14,349] [ERROR] Exception happened while polling for updates.
+Traceback (most recent call last):
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 161, in network_retry_loop
+    await do_action()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 154, in do_action
+    action_cb_task.result()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_updater.py", line 340, in polling_action_cb
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 672, in get_updates
+    updates = await super().get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 4865, in get_updates
+    await self._post(
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 704, in _post
+    return await self._do_post(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 370, in _do_post
+    return await super()._do_post(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 733, in _do_post
+    result = await request.post(
+             ^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 198, in post
+    result = await self._request_wrapper(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 375, in _request_wrapper
+    raise exception
+telegram.error.Conflict: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-05-19 21:20:48,965] [ERROR] Exception happened while polling for updates.
+Traceback (most recent call last):
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 161, in network_retry_loop
+    await do_action()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 154, in do_action
+    action_cb_task.result()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_updater.py", line 340, in polling_action_cb
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 672, in get_updates
+    updates = await super().get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 4865, in get_updates
+    await self._post(
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 704, in _post
+    return await self._do_post(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 370, in _do_post
+    return await super()._do_post(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 733, in _do_post
+    result = await request.post(
+             ^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 198, in post
+    result = await self._request_wrapper(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 375, in _request_wrapper
+    raise exception
+telegram.error.Conflict: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-05-19 21:21:23,515] [ERROR] Exception happened while polling for updates.
+Traceback (most recent call last):
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 161, in network_retry_loop
+    await do_action()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 154, in do_action
+    action_cb_task.result()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_updater.py", line 340, in polling_action_cb
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 672, in get_updates
+    updates = await super().get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 4865, in get_updates
+    await self._post(
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 704, in _post
+    return await self._do_post(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 370, in _do_post
+    return await super()._do_post(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 733, in _do_post
+    result = await request.post(
+             ^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 198, in post
+    result = await self._request_wrapper(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 375, in _request_wrapper
+    raise exception
+telegram.error.Conflict: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-05-19 21:21:58,245] [ERROR] Exception happened while polling for updates.
+Traceback (most recent call last):
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 161, in network_retry_loop
+    await do_action()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 154, in do_action
+    action_cb_task.result()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_updater.py", line 340, in polling_action_cb
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 672, in get_updates
+    updates = await super().get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 4865, in get_updates
+    await self._post(
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 704, in _post
+    return await self._do_post(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 370, in _do_post
+    return await super()._do_post(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 733, in _do_post
+    result = await request.post(
+             ^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 198, in post
+    result = await self._request_wrapper(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 375, in _request_wrapper
+    raise exception
+telegram.error.Conflict: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-05-19 21:22:03,411] [ERROR] Exception happened while polling for updates.
+Traceback (most recent call last):
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 161, in network_retry_loop
+    await do_action()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 154, in do_action
+    action_cb_task.result()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_updater.py", line 340, in polling_action_cb
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 672, in get_updates
+    updates = await super().get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 4865, in get_updates
+    await self._post(
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 704, in _post
+    return await self._do_post(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 370, in _do_post
+    return await super()._do_post(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 733, in _do_post
+    result = await request.post(
+             ^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 198, in post
+    result = await self._request_wrapper(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 375, in _request_wrapper
+    raise exception
+telegram.error.Conflict: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-05-19 21:22:09,178] [ERROR] Exception happened while polling for updates.
+Traceback (most recent call last):
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 161, in network_retry_loop
+    await do_action()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 154, in do_action
+    action_cb_task.result()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_updater.py", line 340, in polling_action_cb
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 672, in get_updates
+    updates = await super().get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 4865, in get_updates
+    await self._post(
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 704, in _post
+    return await self._do_post(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 370, in _do_post
+    return await super()._do_post(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 733, in _do_post
+    result = await request.post(
+             ^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 198, in post
+    result = await self._request_wrapper(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 375, in _request_wrapper
+    raise exception
+telegram.error.Conflict: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-05-19 21:22:16,203] [ERROR] Exception happened while polling for updates.
+Traceback (most recent call last):
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 161, in network_retry_loop
+    await do_action()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 154, in do_action
+    action_cb_task.result()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_updater.py", line 340, in polling_action_cb
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 672, in get_updates
+    updates = await super().get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 4865, in get_updates
+    await self._post(
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 704, in _post
+    return await self._do_post(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 370, in _do_post
+    return await super()._do_post(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 733, in _do_post
+    result = await request.post(
+             ^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 198, in post
+    result = await self._request_wrapper(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 375, in _request_wrapper
+    raise exception
+telegram.error.Conflict: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-05-19 21:22:32,816] [ERROR] Exception happened while polling for updates.
+Traceback (most recent call last):
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 161, in network_retry_loop
+    await do_action()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 154, in do_action
+    action_cb_task.result()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_updater.py", line 340, in polling_action_cb
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 672, in get_updates
+    updates = await super().get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 4865, in get_updates
+    await self._post(
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 704, in _post
+    return await self._do_post(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 370, in _do_post
+    return await super()._do_post(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 733, in _do_post
+    result = await request.post(
+             ^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 198, in post
+    result = await self._request_wrapper(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 375, in _request_wrapper
+    raise exception
+telegram.error.Conflict: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-05-19 21:23:07,383] [ERROR] Exception happened while polling for updates.
+Traceback (most recent call last):
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 161, in network_retry_loop
+    await do_action()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 154, in do_action
+    action_cb_task.result()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_updater.py", line 340, in polling_action_cb
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 672, in get_updates
+    updates = await super().get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 4865, in get_updates
+    await self._post(
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 704, in _post
+    return await self._do_post(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 370, in _do_post
+    return await super()._do_post(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 733, in _do_post
+    result = await request.post(
+             ^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 198, in post
+    result = await self._request_wrapper(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 375, in _request_wrapper
+    raise exception
+telegram.error.Conflict: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-05-19 21:23:42,015] [ERROR] Exception happened while polling for updates.
+Traceback (most recent call last):
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 161, in network_retry_loop
+    await do_action()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 154, in do_action
+    action_cb_task.result()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_updater.py", line 340, in polling_action_cb
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 672, in get_updates
+    updates = await super().get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 4865, in get_updates
+    await self._post(
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 704, in _post
+    return await self._do_post(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 370, in _do_post
+    return await super()._do_post(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 733, in _do_post
+    result = await request.post(
+             ^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 198, in post
+    result = await self._request_wrapper(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 375, in _request_wrapper
+    raise exception
+telegram.error.Conflict: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-05-19 21:24:16,523] [ERROR] Exception happened while polling for updates.
+Traceback (most recent call last):
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 161, in network_retry_loop
+    await do_action()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 154, in do_action
+    action_cb_task.result()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_updater.py", line 340, in polling_action_cb
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 672, in get_updates
+    updates = await super().get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 4865, in get_updates
+    await self._post(
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 704, in _post
+    return await self._do_post(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 370, in _do_post
+    return await super()._do_post(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 733, in _do_post
+    result = await request.post(
+             ^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 198, in post
+    result = await self._request_wrapper(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 375, in _request_wrapper
+    raise exception
+telegram.error.Conflict: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-05-19 21:24:51,123] [ERROR] Exception happened while polling for updates.
+Traceback (most recent call last):
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 161, in network_retry_loop
+    await do_action()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 154, in do_action
+    action_cb_task.result()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_updater.py", line 340, in polling_action_cb
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 672, in get_updates
+    updates = await super().get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 4865, in get_updates
+    await self._post(
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 704, in _post
+    return await self._do_post(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 370, in _do_post
+    return await super()._do_post(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 733, in _do_post
+    result = await request.post(
+             ^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 198, in post
+    result = await self._request_wrapper(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 375, in _request_wrapper
+    raise exception
+telegram.error.Conflict: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-05-19 21:25:25,648] [ERROR] Exception happened while polling for updates.
+Traceback (most recent call last):
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 161, in network_retry_loop
+    await do_action()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 154, in do_action
+    action_cb_task.result()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_updater.py", line 340, in polling_action_cb
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 672, in get_updates
+    updates = await super().get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 4865, in get_updates
+    await self._post(
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 704, in _post
+    return await self._do_post(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 370, in _do_post
+    return await super()._do_post(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 733, in _do_post
+    result = await request.post(
+             ^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 198, in post
+    result = await self._request_wrapper(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 375, in _request_wrapper
+    raise exception
+telegram.error.Conflict: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-05-19 21:26:00,164] [ERROR] Exception happened while polling for updates.
+Traceback (most recent call last):
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 161, in network_retry_loop
+    await do_action()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 154, in do_action
+    action_cb_task.result()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_updater.py", line 340, in polling_action_cb
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 672, in get_updates
+    updates = await super().get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 4865, in get_updates
+    await self._post(
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 704, in _post
+    return await self._do_post(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 370, in _do_post
+    return await super()._do_post(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 733, in _do_post
+    result = await request.post(
+             ^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 198, in post
+    result = await self._request_wrapper(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 375, in _request_wrapper
+    raise exception
+telegram.error.Conflict: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-05-19 21:26:34,772] [ERROR] Exception happened while polling for updates.
+Traceback (most recent call last):
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 161, in network_retry_loop
+    await do_action()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 154, in do_action
+    action_cb_task.result()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_updater.py", line 340, in polling_action_cb
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 672, in get_updates
+    updates = await super().get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 4865, in get_updates
+    await self._post(
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 704, in _post
+    return await self._do_post(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 370, in _do_post
+    return await super()._do_post(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 733, in _do_post
+    result = await request.post(
+             ^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 198, in post
+    result = await self._request_wrapper(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 375, in _request_wrapper
+    raise exception
+telegram.error.Conflict: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-05-19 21:27:09,374] [ERROR] Exception happened while polling for updates.
+Traceback (most recent call last):
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 161, in network_retry_loop
+    await do_action()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 154, in do_action
+    action_cb_task.result()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_updater.py", line 340, in polling_action_cb
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 672, in get_updates
+    updates = await super().get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 4865, in get_updates
+    await self._post(
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 704, in _post
+    return await self._do_post(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 370, in _do_post
+    return await super()._do_post(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 733, in _do_post
+    result = await request.post(
+             ^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 198, in post
+    result = await self._request_wrapper(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 375, in _request_wrapper
+    raise exception
+telegram.error.Conflict: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-05-19 21:27:43,923] [ERROR] Exception happened while polling for updates.
+Traceback (most recent call last):
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 161, in network_retry_loop
+    await do_action()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 154, in do_action
+    action_cb_task.result()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_updater.py", line 340, in polling_action_cb
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 672, in get_updates
+    updates = await super().get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 4865, in get_updates
+    await self._post(
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 704, in _post
+    return await self._do_post(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 370, in _do_post
+    return await super()._do_post(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 733, in _do_post
+    result = await request.post(
+             ^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 198, in post
+    result = await self._request_wrapper(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 375, in _request_wrapper
+    raise exception
+telegram.error.Conflict: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-05-19 21:28:18,506] [ERROR] Exception happened while polling for updates.
+Traceback (most recent call last):
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 161, in network_retry_loop
+    await do_action()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py", line 154, in do_action
+    action_cb_task.result()
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_updater.py", line 340, in polling_action_cb
+    updates = await self.bot.get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 672, in get_updates
+    updates = await super().get_updates(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 4865, in get_updates
+    await self._post(
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 704, in _post
+    return await self._do_post(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/ext/_extbot.py", line 370, in _do_post
+    return await super()._do_post(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/_bot.py", line 733, in _do_post
+    result = await request.post(
+             ^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 198, in post
+    result = await self._request_wrapper(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/anildara/Documents/Agent Driven Development/stock-ai-startup/.venv/lib/python3.12/site-packages/telegram/request/_baserequest.py", line 375, in _request_wrapper
+    raise exception
+telegram.error.Conflict: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running
+[2026-05-19 21:16:32] [INFO] 📡 Position Monitor thread started.
+Starting scan...
+[2026-05-19 21:16:32] [INFO] ☕ System sleep disabled for scan_market.
+Progress: 0 - Fetching Market Data...
+[2026-05-19 21:16:32] [INFO] 📡 Fetching bulk data: Current (2026-05-18) & History (2026-04-21)...
+Progress: 0.2 - Batch fetching fundamentals + price history...
+[2026-05-19 21:16:36] [INFO] 🔄 Incremental fetch [NVDA] from 2026-05-18 → 2026-05-19
+[2026-05-19 21:16:36] [INFO] 🔄 Incremental fetch [AAPL] from 2026-05-18 → 2026-05-19
+[2026-05-19 21:16:51] [ERROR] ⚠️ History Fetch Error [AAPL]: HTTPSConnectionPool(host='api.polygon.io', port=443): Read timed out. (read timeout=15)
+[2026-05-19 21:16:51] [INFO] 🔄 Incremental fetch [MSFT] from 2026-05-18 → 2026-05-19
+[2026-05-19 21:16:51] [INFO] ⏳ Rate Limiter: Pausing 42.2s to respect Polygon limit.
+[2026-05-19 21:17:34] [INFO] 🔄 Incremental fetch [AMZN] from 2026-05-18 → 2026-05-19
+[2026-05-19 21:17:34] [INFO] 🔄 Incremental fetch [GOOGL] from 2026-05-18 → 2026-05-19
+[2026-05-19 21:17:34] [INFO] ⏳ Rate Limiter: Pausing 3.1s to respect Polygon limit.
+[2026-05-19 21:17:37] [INFO] 🔄 Incremental fetch [META] from 2026-05-18 → 2026-05-19
+[2026-05-19 21:17:37] [INFO] 🔄 Incremental fetch [TSLA] from 2026-05-15 → 2026-05-19
+[2026-05-19 21:17:37] [INFO] ⏳ Rate Limiter: Pausing 57.1s to respect Polygon limit.
+[2026-05-19 21:18:35] [INFO] 🔄 Incremental fetch [AMD] from 2026-05-15 → 2026-05-19
+[2026-05-19 21:18:35] [INFO] 🔄 Incremental fetch [NFLX] from 2026-05-15 → 2026-05-19
+[2026-05-19 21:18:35] [INFO] ⏳ Rate Limiter: Pausing 3.0s to respect Polygon limit.
+[2026-05-19 21:18:38] [INFO] 🔄 Incremental fetch [INTC] from 2026-05-15 → 2026-05-19
+[2026-05-19 21:18:38] [INFO] 🔄 Incremental fetch [JPM] from 2026-05-15 → 2026-05-19
+[2026-05-19 21:18:38] [INFO] ⏳ Rate Limiter: Pausing 57.1s to respect Polygon limit.
+[2026-05-19 21:19:36] [INFO] 🔄 Incremental fetch [V] from 2026-05-15 → 2026-05-19
+[2026-05-19 21:19:36] [INFO] 🔄 Incremental fetch [WMT] from 2026-05-15 → 2026-05-19
+[2026-05-19 21:19:36] [INFO] ⏳ Rate Limiter: Pausing 3.0s to respect Polygon limit.
+[2026-05-19 21:19:39] [INFO] 🔄 Incremental fetch [PG] from 2026-05-15 → 2026-05-19
+[2026-05-19 21:19:39] [INFO] 🔄 Incremental fetch [XOM] from 2026-05-15 → 2026-05-19
+[2026-05-19 21:19:39] [INFO] ⏳ Rate Limiter: Pausing 57.0s to respect Polygon limit.
+[2026-05-19 21:20:37] [INFO] 🔄 Incremental fetch [JNJ] from 2026-05-15 → 2026-05-19
+[2026-05-19 21:20:37] [INFO] 🔄 Incremental fetch [HD] from 2026-05-15 → 2026-05-19
+[2026-05-19 21:20:37] [INFO] ⏳ Rate Limiter: Pausing 3.0s to respect Polygon limit.
+[2026-05-19 21:20:40] [INFO] 🔄 Incremental fetch [BAC] from 2026-05-15 → 2026-05-19
+[2026-05-19 21:20:40] [INFO] 🔄 Incremental fetch [KO] from 2026-05-15 → 2026-05-19
+[2026-05-19 21:20:40] [INFO] ⏳ Rate Limiter: Pausing 57.0s to respect Polygon limit.
+[2026-05-19 21:21:38] [INFO] 🔄 Incremental fetch [PEP] from 2026-05-15 → 2026-05-19
+[2026-05-19 21:21:38] [INFO] 📦 History cache loaded for 20 tickers
+Progress: 0.33499999999999996 - Analyzed 1/20: NVDA
+Progress: 0.37 - Analyzed 2/20: AAPL
+Progress: 0.40499999999999997 - Analyzed 3/20: MSFT
+Progress: 0.43999999999999995 - Analyzed 4/20: AMZN
+Progress: 0.475 - Analyzed 5/20: GOOGL
+Progress: 0.51 - Analyzed 6/20: META
+Progress: 0.5449999999999999 - Analyzed 7/20: TSLA
+Progress: 0.58 - Analyzed 8/20: AMD
+Progress: 0.615 - Analyzed 9/20: NFLX
+Progress: 0.6499999999999999 - Analyzed 10/20: INTC
+Progress: 0.685 - Analyzed 11/20: JPM
+Progress: 0.72 - Analyzed 12/20: V
+Progress: 0.7549999999999999 - Analyzed 13/20: WMT
+Progress: 0.7899999999999999 - Analyzed 14/20: PG
+Progress: 0.825 - Analyzed 15/20: XOM
+Progress: 0.8599999999999999 - Analyzed 16/20: JNJ
+Progress: 0.895 - Analyzed 17/20: HD
+Progress: 0.9299999999999999 - Analyzed 18/20: BAC
+Progress: 0.9649999999999999 - Analyzed 19/20: KO
+Progress: 1.0 - Analyzed 20/20: PEP
+[2026-05-19 21:28:27] [INFO] ✅ Scan Complete. Top 10 Portfolio Backtest: 3.75%
+[2026-05-19 21:28:27] [INFO] 🛌 System sleep re-enabled after scan_market.
+Done in 714.53s
+Msg: ### 📊 Top 10 Portfolio Backtest (Last 20 Days): <span style='color:green'>3.75%</span>
+Len DF: 10
