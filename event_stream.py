@@ -55,15 +55,23 @@ class MarketStreamer:
             if t not in self.price_history:
                 self.price_history[t] = deque(maxlen=20) # Buffer for SMA/Volatility
                 
-        # If already running, we need to subscribe/unsubscribe
-        if self.is_running and self.stream:
+        # If already running, we need to subscribe/unsubscribe.
+        # alpaca-py's subscribe_bars / unsubscribe_bars are SYNCHRONOUS (they return None
+        # and just queue a subscription message internally), so we use call_soon_threadsafe
+        # to schedule them onto the WebSocket's event loop from this (agent) thread.
+        # Passing them to run_coroutine_threadsafe raised "A coroutine object is required".
+        if self.is_running and self.stream and self.loop:
             to_subscribe = new_watchlist - old_watchlist
             to_unsubscribe = old_watchlist - new_watchlist
-            
+
             if to_subscribe:
-                asyncio.run_coroutine_threadsafe(self.stream.subscribe_bars(self._handle_bar, *to_subscribe), self.loop)
+                self.loop.call_soon_threadsafe(
+                    self.stream.subscribe_bars, self._handle_bar, *to_subscribe
+                )
             if to_unsubscribe:
-                asyncio.run_coroutine_threadsafe(self.stream.unsubscribe_bars(*to_unsubscribe), self.loop)
+                self.loop.call_soon_threadsafe(
+                    self.stream.unsubscribe_bars, *to_unsubscribe
+                )
 
     def start(self):
         """Starts the background websocket thread."""
