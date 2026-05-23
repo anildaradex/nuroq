@@ -95,20 +95,6 @@ logger = AppLogger()
 # Model Definitions — all paths point to local HuggingFace cache snapshots
 # to skip network checks on every startup.
 MODELS_CFG = {
-    "mistral": {
-        "path": os.path.expanduser(
-            "~/.cache/huggingface/hub/models--mlx-community--Mistral-7B-Instruct-v0.3-4bit"
-            "/snapshots/a4b8f870474b0eb527f466a03fbc187830d271f5"
-        ),
-        "adapter": "./adapters"
-    },
-    "deepseek": {
-        "path": os.path.expanduser(
-            "~/.cache/huggingface/hub/models--mlx-community--DeepSeek-R1-Distill-Qwen-7B-4bit"
-            "/snapshots/21848dbf533d2518a1ef895104820d5ee51317ea"
-        ),
-        "adapter": "./adapters_deepseek"
-    },
     "gemma": {
         "path": os.path.expanduser(
             "~/.cache/huggingface/hub/models--mlx-community--gemma-3-4b-it-4bit"
@@ -126,16 +112,15 @@ class EnsembleAnalyst:
         self.tokenizers = {}
 
     def load_all(self):
-        logger.log("🚀 Loading ENSEMBLE models (Consensus Mode)...")
-        for key, cfg in MODELS_CFG.items():
-            logger.log(f"   - Loading {key}...")
-            m, t = load(cfg["path"], adapter_path=cfg["adapter"])
-            self.models[key] = m
-            self.tokenizers[key] = t
+        logger.log("🚀 Loading Gemma model...")
+        cfg = MODELS_CFG["gemma"]
+        m, t = load(cfg["path"], adapter_path=cfg["adapter"])
+        self.models["gemma"] = m
+        self.tokenizers["gemma"] = t
 
-    def analyze(self, prompt, model_key="deepseek"):
-        m = self.models[model_key]
-        t = self.tokenizers[model_key]
+    def analyze(self, prompt, model_key="gemma"):
+        m = self.models["gemma"]
+        t = self.tokenizers["gemma"]
         
         # Reduced max_tokens and added stop sequences to prevent generation loops
         sampler = make_sampler(temp=0.0)
@@ -148,55 +133,30 @@ class EnsembleAnalyst:
         return response
 
     def get_consensus(self, ticker, prompt):
-        """Runs both models and ensures they agree before returning a signal."""
-        logger.log(f"[{ticker}] ▶ Step 5a: Running DeepSeek inference...")
-        res_ds = self.analyze(prompt, "deepseek")
-        score_ds = self.extract_score(res_ds)
-        logger.log(f"[{ticker}]    DeepSeek result → score={score_ds}")
+        """No consensus check needed. Returns Gemma analysis directly."""
+        logger.log(f"[{ticker}] ▶ Step 5a: Running Gemma inference...")
+        res = self.analyze(prompt, "gemma")
+        score = self.extract_score(res)
+        logger.log(f"[{ticker}]    Gemma result → score={score}")
 
-        logger.log(f"[{ticker}] ▶ Step 5b: Running Mistral inference...")
-        res_ms = self.analyze(prompt, "mistral")
-        score_ms = self.extract_score(res_ms)
-        logger.log(f"[{ticker}]    Mistral result → score={score_ms}")
-
-        # Guardrail Logic
-        is_consensus = False
-        if (score_ds >= 60 and score_ms >= 60) or (score_ds <= 40 and score_ms <= 40):
-            if abs(score_ds - score_ms) <= 20:
-                is_consensus = True
-
-        consensus_str = "✅ CONSENSUS" if is_consensus else "⚠️ NO CONSENSUS"
-        logger.log(f"[{ticker}] ▶ Step 5c: {consensus_str} (DS={score_ds}, MS={score_ms}, diff={abs(score_ds-score_ms)})")
-
-        avg_score = (score_ds + score_ms) // 2
+        rating = self.get_structured_data(res).get("rating", "HOLD")
         
-        # Aggregate Rating: If they disagree, use HOLD. If they agree on BUY/SELL, use that.
-        rating_ds = self.get_structured_data(res_ds).get("rating", "HOLD")
-        rating_ms = self.get_structured_data(res_ms).get("rating", "HOLD")
-        
-        if rating_ds == rating_ms:
-            final_rating = rating_ds
-        elif score_ds > score_ms:
-            final_rating = rating_ds
-        else:
-            final_rating = rating_ms
-            
         # Sanity Check: Ensure Rating matches the Score intensity
-        old_rating = final_rating
-        if avg_score < 70 and final_rating == "BUY":
-            final_rating = "HOLD"
-        elif avg_score > 80 and final_rating == "HOLD":
-            final_rating = "BUY"
+        old_rating = rating
+        if score < 70 and rating == "BUY":
+            rating = "HOLD"
+        elif score > 80 and rating == "HOLD":
+            rating = "BUY"
             
-        if old_rating != final_rating:
-            logger.log(f"[{ticker}] 🛡️ Sanity Guard: Overriding {old_rating} to {final_rating} (Score {avg_score} too low/high)")
+        if old_rating != rating:
+            logger.log(f"[{ticker}] 🛡️ Sanity Guard: Overriding {old_rating} to {rating} (Score {score} too low/high)")
 
-        combined_reasoning = f"--- DEEPSEEK ({score_ds}) ---\n{res_ds}\n\n--- MISTRAL ({score_ms}) ---\n{res_ms}"
+        combined_reasoning = f"--- GEMMA ({score}) ---\n{res}"
         
         return {
-            "is_consensus": is_consensus,
-            "score": avg_score,
-            "rating": final_rating,
+            "is_consensus": True,
+            "score": score,
+            "rating": rating,
             "response": combined_reasoning
         }
 
@@ -266,22 +226,20 @@ class EnsembleAnalyst:
 parser = argparse.ArgumentParser(description="Run the Stock AI Dashboard")
 parser.add_argument("--mode", type=str, default="single", choices=["single", "ensemble"],
                     help="Choose 'single' (one model) or 'ensemble' (consensus mode)")
-parser.add_argument("--model", type=str, default="deepseek", choices=list(MODELS_CFG.keys()),
+parser.add_argument("--model", type=str, default="gemma", choices=["gemma"],
                     help="Choose the model to use in single mode")
 args, unknown = parser.parse_known_args()
 
 analyst = EnsembleAnalyst(mode=args.mode)
-if args.mode == "ensemble":
-    analyst.load_all()
-    SELECTED_MODEL_KEY = "Ensemble (DeepSeek + Mistral)"
-    MODEL_PATH = "Dual-Model Consensus"
-else:
-    # Load for Single Model
-    SELECTED_MODEL_KEY = args.model 
-    MODEL_PATH = MODELS_CFG[SELECTED_MODEL_KEY]["path"]
-    ADAPTER_PATH = MODELS_CFG[SELECTED_MODEL_KEY]["adapter"]
-    logger.log(f"🚀 Loading {SELECTED_MODEL_KEY.upper()} model...")
-    model, tokenizer = load(MODEL_PATH, adapter_path=ADAPTER_PATH)
+analyst.load_all()
+
+SELECTED_MODEL_KEY = "gemma"
+MODEL_PATH = MODELS_CFG["gemma"]["path"]
+ADAPTER_PATH = None
+
+model = analyst.models["gemma"]
+tokenizer = analyst.tokenizers["gemma"]
+
 
 class TradeGatekeeper:
     def __init__(self, token, chat_id):
