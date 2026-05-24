@@ -1116,42 +1116,82 @@ def analyze_stock(ticker, is_auto=False):
                        f"RSI={techs.get('rsi')}, %B={techs.get('percent_b')}.")
         
     elif should_trigger_buy:
-        # BUY signals still require approval
-        logger.log(f"🎯 Gating Passed for {ticker} (Threshold: {gate_threshold}). Requesting Telegram approval...")
-        output_rec += f"\n\n📡 **Action Required! (Earnings Risk: {'HIGH' if e_risk['risk'] else 'LOW'})**"
-        
-        try:
-            future = asyncio.run_coroutine_threadsafe(
-                gatekeeper.request_approval(ticker.upper(), techs['price'], final_score, reasoning),
-                gatekeeper.loop
-            )
-            decision = future.result(timeout=305)
-            logger.log(f"📱 Telegram Decision for {ticker}: {decision}")
-            
-            if decision == "EXECUTE":
-                sizing = calculate_sizing(techs['price'], techs['atr'], account=_live_equity())
+        # BUY signals require Telegram approval, dispatched ASYNC so the UI
+        # (or agent cycle) doesn't block for up to 5 minutes waiting for the tap.
+        logger.log(f"🎯 Gating Passed for {ticker} (Threshold: {gate_threshold}). "
+                   f"Dispatching Telegram approval request asynchronously...")
+        output_rec += (
+            f"\n\n📡 **Approval requested via Telegram** "
+            f"(Earnings Risk: {'HIGH' if e_risk['risk'] else 'LOW'})\n"
+            f"_The UI won't wait — respond on Telegram. "
+            f"Execution + confirmation will happen in the background._"
+        )
+
+        # Capture values to avoid race with outer scope mutations.
+        _ctx = {
+            'ticker':         ticker.upper(),
+            'price':          techs['price'],
+            'atr':            techs['atr'],
+            'final_score':    final_score,
+            'recommendation': recommendation,
+            'reasoning':      reasoning,
+        }
+
+        def _await_approval_and_execute(ctx):
+            try:
+                future = asyncio.run_coroutine_threadsafe(
+                    gatekeeper.request_approval(
+                        ctx['ticker'], ctx['price'], ctx['final_score'], ctx['reasoning']
+                    ),
+                    gatekeeper.loop,
+                )
+                decision = future.result(timeout=305)
+                logger.log(f"📱 Telegram Decision for {ctx['ticker']}: {decision}")
+
+                if decision != "EXECUTE":
+                    logger.log(f"🛑 {ctx['ticker']} approval result: {decision} — no trade placed.")
+                    return
+
+                sizing = calculate_sizing(ctx['price'], ctx['atr'], account=_live_equity())
                 shares_int = int(sizing['shares'])
                 if shares_int < 1:
-                    skip_msg = (f"⚠️ Position size rounds to 0 shares "
-                                f"(price=${techs['price']}, atr={techs['atr']}, raw={sizing['shares']}). Skipped.")
-                    logger.log(f"⚠️ {ticker} sizing rounds to 0 — skipping execute", level="WARNING")
-                    output_rec += f"\n\n{skip_msg}"
-                else:
-                    exec_result = alpaca_api.submit_bracket_order(
-                        ticker.upper(), 'buy', shares_int,
-                        sl=sizing['sl'], tp=sizing['tp'],
-                    )
-                    portfolio_mgr.add_position(ticker.upper(), shares_int, techs['price'],
-                                               sl=sizing['sl'], tp=sizing['tp'],
-                                               score=final_score, rating=recommendation)
-                    output_rec += f"\n\n{exec_result}"
-                    logger.log(f"✅ Executed bracket BUY for {ticker}: {shares_int} shares")
-                    agent_memory.log_decision(ticker.upper(), recommendation, final_score, reasoning)
-            else:
-                output_rec += f"\n\n🛑 Action {decision}."
-        except Exception as e:
-            logger.log(f"⚠️ Approval Error for {ticker}: {e}", level="ERROR")
-            output_rec += f"\n\n⚠️ Approval Error: {e}"
+                    msg = (f"⚠️ {ctx['ticker']} position size rounds to 0 shares "
+                           f"(price=${ctx['price']}, atr={ctx['atr']}, raw={sizing['shares']}). Skipped.")
+                    logger.log(msg, level="WARNING")
+                    gatekeeper.send_notification(msg)
+                    return
+
+                exec_result = alpaca_api.submit_bracket_order(
+                    ctx['ticker'], 'buy', shares_int,
+                    sl=sizing['sl'], tp=sizing['tp'],
+                )
+                portfolio_mgr.add_position(
+                    ctx['ticker'], shares_int, ctx['price'],
+                    sl=sizing['sl'], tp=sizing['tp'],
+                    score=ctx['final_score'], rating=ctx['recommendation'],
+                )
+                logger.log(f"✅ Executed bracket BUY for {ctx['ticker']}: {shares_int} shares — {exec_result}")
+                agent_memory.log_decision(
+                    ctx['ticker'], ctx['recommendation'], ctx['final_score'], ctx['reasoning']
+                )
+                # Loop back to the user via Telegram since the UI has already moved on.
+                gatekeeper.send_notification(
+                    f"✅ Trade executed: BUY {shares_int} {ctx['ticker']} @ ~${ctx['price']}\n"
+                    f"SL: ${sizing['sl']} | TP: ${sizing['tp']} | Score: {ctx['final_score']}"
+                )
+            except Exception as e:
+                logger.log(f"⚠️ Async approval/execute error for {ctx['ticker']}: {e}", level="ERROR")
+                try:
+                    gatekeeper.send_notification(f"⚠️ {ctx['ticker']} approval/execute error: {e}")
+                except Exception:
+                    pass
+
+        threading.Thread(
+            target=_await_approval_and_execute,
+            args=(_ctx,),
+            name=f"approval-{ticker.upper()}",
+            daemon=True,
+        ).start()
 
     # --- Build rich interactive Plotly chart ---
     chart_fig = None
