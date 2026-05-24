@@ -32,6 +32,7 @@ from event_stream import MarketStreamer
 from data_fetcher import (
     PolygonRateLimiter, AppCache,
     rate_limiter, news_cache, funds_cache,
+    fundamentals_cache, ai_score_cache,
     get_polygon_news, get_full_history,
     get_fundamentals, get_fundamentals_batch_async,
     get_history_batch_async,
@@ -978,10 +979,25 @@ def analyze_stock(ticker, is_auto=False):
             logger.log(f"{tag} 🛡️ Sanity Guard: Overriding HOLD to BUY (Score {score} high enough)")
             recommendation = "BUY"
 
+    # Write through to persistent AI score cache so overnight cycles and the
+    # live reactive agent (Phase 3) can reuse it without re-running Gemma.
+    try:
+        ai_score_cache.store(ticker.upper(), {
+            "score":          score,
+            "rating":         recommendation,
+            "reasoning":      reasoning,
+            "bull_case":      analysis_data.get("bull_case", ""),
+            "bear_case":      analysis_data.get("bear_case", ""),
+            "key_risk":       analysis_data.get("key_risk", ""),
+            "considerations": analysis_data.get("considerations", []),
+        })
+    except Exception as e:
+        logger.log(f"{tag} ⚠️ AI score cache write failed: {e}", level="WARNING")
+
     # STEP 6: Quant Scoring & Final Recommendation
     status_msg += "\n✅ Step 6: Calculating Hybrid Quant Score..."
     logger.log(f"{tag} Step 6/{total_steps}: Merging AI analysis with objective Quant metrics...")
-    
+
     # Calculate the new objective score
     final_score = calculate_quant_score(techs, funds, w_trend, e_risk, st_sent, score)
     
@@ -1047,7 +1063,7 @@ def analyze_stock(ticker, is_auto=False):
 
     # ── BOX 4: Trade Setup (bottom-right) ─────────────────────────────────
     sizing = calculate_sizing(techs['price'], techs['atr'], account=_live_equity())
-    gate_threshold = 80 if e_risk['risk'] else 70
+    gate_threshold = 75 if e_risk['risk'] else 65
     gate_status = "🔒 GATE LOCKED" if final_score < gate_threshold else "🔓 GATE OPEN — awaiting Telegram approval"
 
     setup_md  = f"### 📐 Trade Setup\n\n"
@@ -1064,7 +1080,7 @@ def analyze_stock(ticker, is_auto=False):
     # --- PORTFOLIO EXECUTION ---
     # Gating Logic: 
     # BUY: Final Quant Score >= threshold
-    gate_threshold = 80 if e_risk['risk'] else 70
+    gate_threshold = 75 if e_risk['risk'] else 65
     
     is_buy = recommendation == "BUY"
     is_sell = recommendation == "SELL"
