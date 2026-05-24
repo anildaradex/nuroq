@@ -1,10 +1,11 @@
 # NuroQ — Target Architecture (multi-phase rebuild)
 
 > Living design doc. Updated as phases land. See `CAPABILITIES.md` for current
-> user-facing functionality; this doc describes where we're going.
+> user-facing functionality; `SCHEDULING.md` for how to schedule the overnight
+> cycle; this doc describes where we're going.
 >
-> **Last updated:** 2026-05-23 (Phase 1 in progress)
-> **Status:** Phase 1 of 5 in flight
+> **Last updated:** 2026-05-23 (Phase 2 ships)
+> **Status:** Phases 1 + 2 complete · Phase 3 next
 
 ---
 
@@ -99,38 +100,31 @@ local LLM for the heavy reasoning.
 
 ## Phased rollout
 
-### Phase 1 — Persistent caches (foundation)
+### Phase 1 — Persistent caches (foundation) ✅ DONE
 
-**Goal:** Make sure fundamentals and AI scores survive restarts and become
-queryable independently of the live agent.
-
-**Deliverables:**
-- New SQLite table `fundamentals_cache`
-- New SQLite table `ai_scores_cache`
-- `FundamentalsCache` class in `data_fetcher.py` with L1 (in-memory 4h) /
-  L2 (SQLite 24h) / L3 (yfinance) layering
-- `AIScoreCache` class for storing Gemma outputs
-- `analyze_stock` writes through to `ai_scores_cache`
-
-**Status:** In progress (this session)
+- `fundamentals_cache` and `ai_scores_cache` SQLite tables created
+- `FundamentalsCache` class (L1→L2→L3 layered, 24h TTL)
+- `AIScoreCache` class with `store` / `get` / `invalidate`
+- Both `analyze_stock` (full path with RAG) and `analyze_single_ticker_data`
+  (scanner path) write through to `ai_scores_cache`
+- `get_fundamentals` reads L1 → L2 → fetches L3 only on miss
 
 ---
 
-### Phase 2 — Overnight research cycle
+### Phase 2 — Overnight research cycle ✅ DONE
 
-**Goal:** Standalone script that runs full universe scan + populates today's
-watchlist before market open.
+- `research_cycle.py` — standalone CLI with `--top-n`, `--no-telegram`,
+  `--dry-run` flags. Sets `NUROQ_BACKGROUND_SERVICES=0` before importing
+  dashboard so it never conflicts with a running dashboard's Telegram poller.
+- `watchlist_today` SQLite table — ranked snapshot, atomically replaced each run
+- `_build_watchlist_rows` ranks by quant_score → ai_score → change_pct
+- One-shot Telegram notifications at start, 25/50/75/100% milestones
+- Same `run_research_cycle` function is also wired to the "🔬 Run Research
+  Cycle" button in the dashboard top-right for ad-hoc runs
+- macOS launchd + Linux cron/systemd setup documented in `SCHEDULING.md`
 
-**Deliverables:**
-- `research_cycle.py` — standalone CLI script
-- New SQLite table `watchlist_today` (ticker, composite_rank, ai_score,
-  quant_score, technical_summary, fundamentals_summary, last_updated)
-- Reads Polygon grouped snapshot, applies liquidity filter, runs full analysis
-  on top N (configurable, default 500)
-- Writes all results to `ai_scores_cache` + `watchlist_today`
-- Cron entry: `0 2 * * 1-5 cd /path/to/repo && ./.venv/bin/python research_cycle.py`
-
-**Out of scope for Phase 2:** UI changes, live agent changes.
+**Out of scope for Phase 2:** UI changes beyond the trigger button, live
+agent changes (Phase 3).
 
 ---
 

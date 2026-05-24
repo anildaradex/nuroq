@@ -32,7 +32,7 @@ from event_stream import MarketStreamer
 from data_fetcher import (
     PolygonRateLimiter, AppCache,
     rate_limiter, news_cache, funds_cache,
-    fundamentals_cache, ai_score_cache,
+    fundamentals_cache, ai_score_cache, watchlist_today,
     get_polygon_news, get_full_history,
     get_fundamentals, get_fundamentals_batch_async,
     get_history_batch_async,
@@ -531,6 +531,221 @@ def _live_equity(fallback: float = 10_000.0) -> float:
     return fallback
 
 
+# ─── Ad-hoc Research Cycle (Phase 2 preview, button-triggered) ───────────────
+# Single-run guard so multiple button clicks don't spawn overlapping cycles.
+_research_lock = threading.Lock()
+_research_in_progress = {"active": False, "started_at": None, "progress": 0, "total": 0}
+
+
+def _research_status_text() -> str:
+    if not _research_in_progress["active"]:
+        return "_Research cycle idle._"
+    pct = (_research_in_progress["progress"] / _research_in_progress["total"] * 100
+           if _research_in_progress["total"] else 0)
+    return (f"🔄 **Research cycle running** — {_research_in_progress['progress']}/"
+            f"{_research_in_progress['total']} ({pct:.0f}%) since "
+            f"{_research_in_progress['started_at'].strftime('%H:%M:%S')}")
+
+
+def _build_watchlist_rows(analyses: list, batch_funds: dict) -> list:
+    """
+    Turns the per-ticker analysis dicts into ranked watchlist rows for
+    watchlist_today. Ranking: highest quant_score first, ties broken by
+    AI score then by today's change %.
+    """
+    enriched = []
+    for a in analyses:
+        if not a:
+            continue
+        ticker = a.get("Ticker")
+        funds = batch_funds.get(ticker, {}) if batch_funds else {}
+        tech_summary = (
+            f"{a.get('Trend', 'N/A')} | RSI {a.get('Analysis','')[:0]}"
+            f"Price ${a.get('Price', 0)} | Change {a.get('Change %', 0)}% "
+            f"| 20D {a.get('20D Gain %', 0)}%"
+        )
+        fund_summary = f"P/E: {funds.get('pe', 'N/A')} | Growth: {funds.get('growth', 'N/A')}"
+        # The AI score isn't returned directly by analyze_single_ticker_data; pull from cache.
+        cached_ai = ai_score_cache.get(ticker) or {}
+        enriched.append({
+            "ticker":         ticker,
+            "quant_score":    a.get("Score", 0),
+            "ai_score":       cached_ai.get("score"),
+            "recommendation": a.get("Rating", "HOLD"),
+            "price":          a.get("Price", 0),
+            "change_pct":     a.get("Change %", 0),
+            "technicals_summary":   tech_summary,
+            "fundamentals_summary": fund_summary,
+        })
+
+    # Defensive coercion: any field from analyze_single_ticker_data or the AI
+    # cache could in principle be a string (e.g., "N/A" or a stringified number
+    # from a non-conforming LLM output). Force everything to float for the sort
+    # key with try/except so one bad row can't tank a 25-min cycle.
+    def _num(v) -> float:
+        try:
+            return float(v) if v is not None else 0.0
+        except (TypeError, ValueError):
+            return 0.0
+
+    enriched.sort(
+        key=lambda r: (
+            -_num(r.get("quant_score")),
+            -_num(r.get("ai_score")),
+            -_num(r.get("change_pct")),
+        )
+    )
+    for idx, row in enumerate(enriched, start=1):
+        row["rank"] = idx
+    return enriched
+
+
+def run_research_cycle(top_n: int = 150) -> str:
+    """
+    Ad-hoc Tier-1 cache population. Pulls Polygon snapshot, filters by liquidity
+    and momentum, runs analyze_single_ticker_data on top N. Both
+    fundamentals_cache and ai_score_cache get written through.
+
+    Designed to be called from a background thread (e.g. the Refresh Cache
+    button). Notifies via Telegram at 25%/50%/75%/100% and on completion.
+    Returns a short status string for the immediate caller.
+    """
+    with _research_lock:
+        if _research_in_progress["active"]:
+            return "⚠️ Research cycle already running — wait for it to finish or restart the app."
+        _research_in_progress.update(
+            active=True, started_at=datetime.now(), progress=0, total=top_n
+        )
+
+    try:
+        logger.log(f"🔬 [Research Cycle] Starting ad-hoc Tier-1 refresh (top {top_n})...")
+        target_date = get_last_trading_day()
+        date_20d_ago = get_trading_day_n_ago(20)
+
+        rate_limiter.wait()
+        url_curr = (f"https://api.polygon.io/v2/aggs/grouped/locale/us/market/stocks/"
+                    f"{target_date}?adjusted=true&apiKey={POLYGON_API_KEY}")
+        rate_limiter.wait()
+        url_hist = (f"https://api.polygon.io/v2/aggs/grouped/locale/us/market/stocks/"
+                    f"{date_20d_ago}?adjusted=true&apiKey={POLYGON_API_KEY}")
+
+        resp_c = requests.get(url_curr, timeout=20).json()
+        resp_h = requests.get(url_hist, timeout=20).json()
+        if "results" not in resp_c:
+            raise RuntimeError("Polygon snapshot returned no results")
+
+        hist_prices = {item['T']: item['c'] for item in resp_h.get("results", [])}
+
+        # Liquidity + momentum filter (looser than agent loop to populate broader cache).
+        candidates = []
+        for item in resp_c["results"]:
+            price = item.get('c', 0)
+            vol = item.get('v', 0)
+            if price < 2 or vol < 500_000:
+                continue
+            p20 = hist_prices.get(item['T'])
+            if not p20 or price <= p20:
+                continue
+            candidates.append(item)
+
+        candidates.sort(key=lambda x: x.get('v', 0), reverse=True)
+        top_picks = candidates[:top_n]
+        _research_in_progress["total"] = len(top_picks)
+        logger.log(f"🔬 [Research Cycle] {len(top_picks)} tickers selected for cache refresh.")
+
+        gatekeeper.send_notification(
+            f"🔬 Research cycle started — {len(top_picks)} tickers in scope. "
+            f"ETA ~{len(top_picks) * 8 // 60} min."
+        )
+
+        # Pre-fetch fundamentals + history in batches (already cached helpers).
+        tickers = [p['T'] for p in top_picks]
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        batch_funds = loop.run_until_complete(get_fundamentals_batch_async(tickers, logger))
+        batch_history = loop.run_until_complete(get_history_batch_async(tickers, logger, skip_stale=True))
+
+        # Collect each analysis result so we can write a ranked watchlist at the end.
+        analysis_results = []
+
+        # Analyze each (writes through fundamentals_cache + ai_score_cache via
+        # analyze_single_ticker_data's cache hooks).
+        progress_milestones = {int(len(top_picks) * f): int(f * 100)
+                               for f in (0.25, 0.50, 0.75)}
+        for i, item in enumerate(top_picks, start=1):
+            ticker = item['T']
+            history = batch_history.get(ticker, [])
+            # Inject today's bar so technicals reflect the current session.
+            # Defensive: Polygon raw bars have `t` as int ms; normalize before comparing
+            # to target_date (string). Should not be needed after get_full_history fix,
+            # but guards against any other caller leaking raw Polygon shapes.
+            if history:
+                last_t = history[-1].get("t", "")
+                if isinstance(last_t, (int, float)):
+                    last_t = date.fromtimestamp(last_t / 1000).strftime("%Y-%m-%d")
+                if last_t < target_date:
+                    history = history + [{
+                        "o": item.get("o"), "h": item.get("h"),
+                        "l": item.get("l"), "c": item.get("c"),
+                        "v": item.get("v"), "t": target_date,
+                    }]
+            try:
+                analysis = analyze_single_ticker_data(
+                    ticker,
+                    pre_fetched_data=item,
+                    pre_fetched_funds=batch_funds.get(ticker),
+                    pre_fetched_history=history,
+                )
+                if analysis:
+                    analysis_results.append(analysis)
+            except Exception as e:
+                logger.log(f"⚠️ [Research Cycle] {ticker} failed: {e}", level="WARNING")
+            _research_in_progress["progress"] = i
+
+            if i in progress_milestones:
+                pct = progress_milestones[i]
+                gatekeeper.send_notification(f"🔬 Research cycle: {pct}% ({i}/{len(top_picks)})")
+
+        # Write today's ranked watchlist for the live reactive agent (Phase 3) to consume.
+        watchlist_rows = _build_watchlist_rows(analysis_results, batch_funds)
+        n_written = watchlist_today.replace_all(watchlist_rows)
+
+        elapsed_min = (datetime.now() - _research_in_progress['started_at']).seconds // 60
+        n_buys = sum(1 for r in watchlist_rows if r["recommendation"] == "BUY")
+        msg = (f"✅ Research cycle complete: {len(top_picks)} tickers analyzed in {elapsed_min} min. "
+               f"Watchlist: {n_written} ranked candidates ({n_buys} BUY). "
+               f"Fundamentals + AI scores cached.")
+        logger.log(msg)
+        gatekeeper.send_notification(msg)
+        return msg
+    except Exception as e:
+        import traceback as _tb
+        tb_str = _tb.format_exc()
+        err = f"❌ Research cycle error: {e}"
+        logger.log(err, level="ERROR")
+        logger.log(f"   Traceback:\n{tb_str}", level="ERROR")
+        try:
+            gatekeeper.send_notification(f"{err}\n(see activity.log for traceback)")
+        except Exception:
+            pass
+        return err
+    finally:
+        _research_in_progress.update(active=False, started_at=None, progress=0, total=0)
+
+
+def trigger_research_cycle_async() -> str:
+    """Button handler: dispatch research cycle in a daemon thread and return immediately."""
+    if _research_in_progress["active"]:
+        return "⚠️ Research cycle is already running."
+    threading.Thread(
+        target=run_research_cycle,
+        name="research-cycle",
+        daemon=True,
+    ).start()
+    return ("🔬 Research cycle started in background. "
+            "ETA ~15-25 min. Telegram progress at 25/50/75/100%.")
+
+
 def render_alpaca_panel() -> str:
     """Markdown snapshot of Alpaca equity, cash, today's P/L, and 30-day return."""
     acct = alpaca_api.get_account_summary()
@@ -550,14 +765,44 @@ def render_alpaca_panel() -> str:
     else:
         thirty_day = "_30-day history unavailable_"
 
+    # Pending/open orders — surfaces brackets queued for market open
+    orders = alpaca_api.get_open_orders(limit=25)
+    if orders:
+        order_rows = []
+        for o in orders:
+            side_emoji = "🟢" if o["side"] == "BUY" else "🔴"
+            kind = "Bracket" if o["is_bracket"] else o["order_type"].title()
+            qty = int(o["qty"]) if o["qty"] == int(o["qty"]) else o["qty"]
+            px = ""
+            if o["limit_price"]:
+                px += f"@ ${o['limit_price']:.2f}"
+            if o["stop_price"]:
+                px += (" " if px else "") + f"stop ${o['stop_price']:.2f}"
+            submitted = (o["submitted_at"] or "")[:16].replace("T", " ")
+            order_rows.append(
+                f"| {side_emoji} **{o['symbol']}** | {o['side']} | {qty} | {kind} | "
+                f"{px or '—'} | `{o['status']}` | {submitted} |"
+            )
+        orders_section = (
+            f"\n\n#### 📋 Pending Orders ({len(orders)}) — _queued, will route at market open_\n"
+            f"| | Side | Qty | Type | Price | Status | Submitted |\n"
+            f"|:---|:---:|---:|:---|:---|:---|:---|\n"
+            + "\n".join(order_rows)
+        )
+        order_badge = f" · 📋 {len(orders)} pending"
+    else:
+        orders_section = "\n\n_No pending orders._"
+        order_badge = ""
+
     return (
-        f"### 💰 Alpaca Account ({acct['status']})\n"
+        f"### 💰 Alpaca Account ({acct['status']}){order_badge}\n"
         f"| Equity | Cash | Buying Power | Positions |\n"
         f"|:---:|:---:|:---:|:---:|\n"
         f"| **${acct['equity']:,.2f}** | ${acct['cash']:,.2f} "
         f"| ${acct['buying_power']:,.2f} | ${acct['positions_value']:,.2f} |\n\n"
         f"{pl_emoji} **Today**: {pl_sign}${acct['todays_pl']:,.2f} "
         f"({pl_sign}{acct['todays_pl_pct']:.2f}%) &nbsp;|&nbsp; {thirty_day}"
+        + orders_section
     )
 
 
@@ -658,7 +903,21 @@ def analyze_single_ticker_data(ticker, pre_fetched_data=None, pre_fetched_funds=
     # 4. Extract and Log
     structured_data = analyst.get_structured_data(response)
     score = structured_data.get("score", 50)
-    
+
+    # Write through to AI score cache so research cycle + live agent can reuse it.
+    try:
+        ai_score_cache.store(ticker.upper(), {
+            "score":          score,
+            "rating":         structured_data.get("rating", "HOLD"),
+            "reasoning":      structured_data.get("reasoning", ""),
+            "bull_case":      structured_data.get("bull_case", ""),
+            "bear_case":      structured_data.get("bear_case", ""),
+            "key_risk":       structured_data.get("key_risk", ""),
+            "considerations": structured_data.get("considerations", []),
+        })
+    except Exception as e:
+        logger.log(f"⚠️ AI score cache write failed [{ticker}]: {e}", level="WARNING")
+
     # Calculate additional metrics for Hybrid Quant Score
     # We use fast/local versions to keep the scan snappy
     w_trend = get_weekly_confluence(history) if history else "UNKNOWN"
@@ -1291,8 +1550,16 @@ def run_bot_background(gk):
     loop.run_until_complete(gk.start())
     loop.run_forever()
 
-# Start Telegram Bot in Background
-threading.Thread(target=run_bot_background, args=(gatekeeper,), daemon=True).start()
+# Background services (Telegram bot + position monitor) only start when
+# NUROQ_BACKGROUND_SERVICES != "0". The cron script sets this to 0 so it can
+# import dashboard for run_research_cycle without spinning up a competing
+# Telegram poller (which would conflict with the running dashboard's bot token).
+START_BACKGROUND_SERVICES = os.getenv("NUROQ_BACKGROUND_SERVICES", "1") != "0"
+
+if START_BACKGROUND_SERVICES:
+    threading.Thread(target=run_bot_background, args=(gatekeeper,), daemon=True).start()
+else:
+    logger.log("ℹ️ NUROQ_BACKGROUND_SERVICES=0 — skipping Telegram bot polling.", level="INFO")
 
 class AgentLoop:
     def __init__(self, interval_hours=4):
@@ -1533,9 +1800,12 @@ def run_position_monitor():
             logger.log(f"⚠️ Position Monitor Error: {e}", level="ERROR")
         time.sleep(60)
 
-# Start Monitor
-monitor_thread = threading.Thread(target=run_position_monitor, daemon=True)
-monitor_thread.start()
+# Start Monitor (gated by the same NUROQ_BACKGROUND_SERVICES flag as the Telegram bot)
+if START_BACKGROUND_SERVICES:
+    monitor_thread = threading.Thread(target=run_position_monitor, daemon=True)
+    monitor_thread.start()
+else:
+    logger.log("ℹ️ NUROQ_BACKGROUND_SERVICES=0 — skipping position monitor.", level="INFO")
 
 def update_agent_status():
     status = "Running" if agent.is_running else "Stopped"
@@ -1605,9 +1875,13 @@ with gr.Blocks(theme=custom_theme, js=theme_manager_js) as demo:
             gr.Image("nuroq_logo.png", show_label=False, container=False, width=100)
         with gr.Column(scale=4):
             gr.Markdown("# 🧠 NuroQ — Frontier Neural Quant\n`Neural · Ensemble · Sovereign Agent`")
-        with gr.Column(scale=1, min_width=150):
+        with gr.Column(scale=1, min_width=200):
+            refresh_cache_btn = gr.Button("🔬 Run Research Cycle", size="sm", variant="primary")
+            cache_status_md = gr.Markdown(_research_status_text())
             theme_toggle_btn = gr.Button("🌙 Switch to Dark Mode", size="sm")
-    
+
+    refresh_cache_btn.click(trigger_research_cycle_async, outputs=[cache_status_md])
+
     # ── ALPACA ACCOUNT PANEL ───────────────────────────────────────────────
     with gr.Row():
         alpaca_panel = gr.Markdown(render_alpaca_panel())

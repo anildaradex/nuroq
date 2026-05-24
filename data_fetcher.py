@@ -348,6 +348,108 @@ class AIScoreCache:
                 )
 
 
+# ---------------------------------------------------------------------------
+# Watchlist Today (Phase 2 of ARCHITECTURE.md rebuild)
+# ---------------------------------------------------------------------------
+
+class WatchlistToday:
+    """
+    Output of the overnight research cycle — the ranked short-list the live
+    reactive agent (Phase 3) will subscribe to and react against.
+    Rebuilt every research run; previous day's rows are cleared.
+    """
+
+    def __init__(self, db_path: str = DB_PATH):
+        self.db_path = db_path
+        self._lock = threading.Lock()
+        self._init_table()
+
+    def _init_table(self):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS watchlist_today (
+                    ticker                TEXT PRIMARY KEY,
+                    rank                  INTEGER NOT NULL,
+                    ai_score              INTEGER,
+                    quant_score           INTEGER,
+                    recommendation        TEXT,
+                    price                 REAL,
+                    change_pct            REAL,
+                    technicals_summary    TEXT,
+                    fundamentals_summary  TEXT,
+                    generated_at          REAL NOT NULL
+                )
+            """)
+            conn.execute("PRAGMA journal_mode=WAL")
+
+    def replace_all(self, rows: list) -> int:
+        """
+        Atomically replace yesterday's watchlist with today's.
+        `rows` is a list of dicts produced by the research cycle.
+        Returns the number of rows written.
+        """
+        if not rows:
+            return 0
+        now = time.time()
+        with self._lock:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute("DELETE FROM watchlist_today")
+                conn.executemany(
+                    "INSERT INTO watchlist_today "
+                    "(ticker, rank, ai_score, quant_score, recommendation, price, "
+                    "change_pct, technicals_summary, fundamentals_summary, generated_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    [
+                        (
+                            r["ticker"].upper(),
+                            int(r["rank"]),
+                            int(r.get("ai_score") or 0) if r.get("ai_score") is not None else None,
+                            int(r.get("quant_score") or 0) if r.get("quant_score") is not None else None,
+                            str(r.get("recommendation", "HOLD")).upper(),
+                            float(r.get("price") or 0),
+                            float(r.get("change_pct") or 0),
+                            str(r.get("technicals_summary", ""))[:500],
+                            str(r.get("fundamentals_summary", ""))[:500],
+                            now,
+                        )
+                        for r in rows
+                    ],
+                )
+        return len(rows)
+
+    def get_all(self) -> list:
+        """Returns today's watchlist sorted by rank ASC. Returns [] if empty."""
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT ticker, rank, ai_score, quant_score, recommendation, price, "
+                "change_pct, technicals_summary, fundamentals_summary, generated_at "
+                "FROM watchlist_today ORDER BY rank ASC"
+            ).fetchall()
+        return [
+            {
+                "ticker":               r[0],
+                "rank":                 r[1],
+                "ai_score":             r[2],
+                "quant_score":          r[3],
+                "recommendation":       r[4],
+                "price":                r[5],
+                "change_pct":           r[6],
+                "technicals_summary":   r[7],
+                "fundamentals_summary": r[8],
+                "generated_at":         r[9],
+            }
+            for r in rows
+        ]
+
+    def get_tickers(self) -> list:
+        """Returns just the list of ticker symbols on today's watchlist."""
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT ticker FROM watchlist_today ORDER BY rank ASC"
+            ).fetchall()
+        return [r[0] for r in rows]
+
+
 # Module-level singletons
 rate_limiter      = PolygonRateLimiter()
 news_cache        = AppCache(ttl_seconds=7200)   # 2 hours (L1 in-memory)
@@ -355,6 +457,7 @@ funds_cache       = AppCache(ttl_seconds=14400)  # 4 hours (L1 in-memory)
 history_cache     = HistoryCache(db_path=DB_PATH)
 fundamentals_cache = FundamentalsCache(db_path=DB_PATH, ttl_hours=24)  # L2 persistent
 ai_score_cache    = AIScoreCache(db_path=DB_PATH, ttl_hours=24)        # L2 persistent
+watchlist_today    = WatchlistToday(db_path=DB_PATH)                   # Phase 2 output
 
 
 # ---------------------------------------------------------------------------
@@ -484,7 +587,9 @@ def get_full_history(ticker: str, logger=None) -> list:
         bars = _fetch_bars_from_polygon(ticker, start_date, end_date, logger)
         if bars:
             history_cache.store(ticker, bars)
-        return bars
+        # Return from cache so timestamps are normalized to ISO date strings
+        # (Polygon returns `t` as int milliseconds; downstream code expects strings).
+        return history_cache.get(ticker, allow_stale=True) or []
 
 
 # ---------------------------------------------------------------------------

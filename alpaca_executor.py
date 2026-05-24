@@ -12,8 +12,9 @@ from alpaca.trading.requests import (
     TakeProfitRequest,
     StopLossRequest,
     GetPortfolioHistoryRequest,
+    GetOrdersRequest,
 )
-from alpaca.trading.enums import OrderSide, TimeInForce, OrderClass
+from alpaca.trading.enums import OrderSide, TimeInForce, OrderClass, QueryOrderStatus
 
 # Setup basic logger for execution module
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] [%(levelname)s] %(message)s')
@@ -198,6 +199,43 @@ class LiveAlpacaExecutor:
             err = f"❌ Alpaca close_position failed for {ticker}: {e}"
             logger.error(err)
             return err
+
+    def get_open_orders(self, limit: int = 50) -> list:
+        """
+        Returns pending/open orders at Alpaca (anything not yet filled/cancelled).
+        Each item is a dict with: id, symbol, side, qty, order_type, order_class,
+        limit_price, stop_price, status, submitted_at, is_bracket.
+        Returns [] if disconnected or on error.
+        """
+        if not self._ensure_connection():
+            return []
+        try:
+            req = GetOrdersRequest(status=QueryOrderStatus.OPEN, limit=limit, nested=True)
+            orders = self.client.get_orders(filter=req)
+        except Exception as e:
+            logger.warning(f"⚠️ get_open_orders failed: {e}")
+            return []
+
+        result = []
+        for o in orders:
+            side = o.side.value if hasattr(o.side, 'value') else str(o.side)
+            otype = o.order_type.value if hasattr(o.order_type, 'value') else str(o.order_type)
+            oclass = (o.order_class.value if hasattr(o.order_class, 'value') else str(o.order_class)) if o.order_class else "simple"
+            status = o.status.value if hasattr(o.status, 'value') else str(o.status)
+            result.append({
+                "id":             str(o.id),
+                "symbol":         o.symbol,
+                "side":           side.upper(),
+                "qty":            float(o.qty) if o.qty else 0.0,
+                "order_type":     otype,
+                "order_class":    oclass,
+                "limit_price":    float(o.limit_price) if o.limit_price else None,
+                "stop_price":     float(o.stop_price) if o.stop_price else None,
+                "status":         status,
+                "submitted_at":   o.submitted_at.isoformat() if o.submitted_at else None,
+                "is_bracket":     oclass == "bracket",
+            })
+        return result
 
     def get_account_summary(self) -> dict:
         """

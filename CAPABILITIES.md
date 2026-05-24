@@ -1,9 +1,9 @@
 # NuroQ — Capabilities & Architecture
 
 > Living reference for what this tool does, how it's wired, and where its limits are.
-> **Last updated:** 2026-05-23 (Phase 1 caches landed: fundamentals + AI scores persisted)
+> **Last updated:** 2026-05-23 (Phase 2 ships: research_cycle.py + watchlist_today + 🔬 Run Research Cycle button + pending orders panel)
 >
-> **For where this is going:** see `ARCHITECTURE.md` for the multi-phase rebuild plan (3-tier system: overnight research → premarket refresh → live reactive agent).
+> **For where this is going:** see `ARCHITECTURE.md` for the multi-phase rebuild plan (3-tier system: overnight research → premarket refresh → live reactive agent). See `SCHEDULING.md` for cron / launchd setup.
 >
 > **How to update:** when you ship a feature or fix that changes a user-visible workflow, a subsystem, or an honest-assessment caveat, edit the relevant section here and bump the date. Keep it terse.
 
@@ -173,6 +173,7 @@ Three-tier where applicable: L1 in-memory (fast, lost on restart) → L2 SQLite 
 - **SQLite `price_history`** — persistent OHLCV cache, ~327 tickers cached, ~5ms hits
 - **SQLite `fundamentals_cache`** — persistent P/E, growth, market cap, news (24h TTL); read-through layer below the in-memory hot cache
 - **SQLite `ai_scores_cache`** — persistent Gemma analysis output per ticker (24h TTL); foundation for overnight research → live reactive agent reuse (see `ARCHITECTURE.md`)
+- **SQLite `watchlist_today`** — ranked output of the overnight research cycle (or the "🔬 Run Research Cycle" button); atomically replaced each run; consumed by the future live reactive agent (Phase 3)
 - **In-memory news cache** — 2h TTL (L1)
 - **In-memory fundamentals cache** — 4h TTL (L1)
 - **Polygon rate limiter** — 5 req/min, releases lock during sleep so concurrent workers can queue
@@ -253,6 +254,7 @@ Three-tier where applicable: L1 in-memory (fast, lost on restart) → L2 SQLite 
 | `price_history` | Cached OHLCV bars (~327 tickers, 31k rows) |
 | `fundamentals_cache` | Persistent yfinance fundamentals (24h TTL) — Phase 1 of rebuild |
 | `ai_scores_cache` | Persistent Gemma analysis output per ticker (24h TTL) — Phase 1 of rebuild |
+| `watchlist_today` | Ranked candidates from overnight research cycle (Phase 2) |
 | `portfolio` | Current open positions (synced from Alpaca) |
 | `all_signals` | Persistent log of every analysis (1000+ rows from 2026-04 → present) |
 | `shadow_trades` | Legacy table from old SQLite-only execution (still initialized, unused in main flow) |
