@@ -538,13 +538,26 @@ _research_in_progress = {"active": False, "started_at": None, "progress": 0, "to
 
 
 def _research_status_text() -> str:
-    if not _research_in_progress["active"]:
-        return "_Research cycle idle._"
-    pct = (_research_in_progress["progress"] / _research_in_progress["total"] * 100
-           if _research_in_progress["total"] else 0)
-    return (f"🔄 **Research cycle running** — {_research_in_progress['progress']}/"
-            f"{_research_in_progress['total']} ({pct:.0f}%) since "
-            f"{_research_in_progress['started_at'].strftime('%H:%M:%S')}")
+    """
+    Renders the research-cycle status line for the top-right panel.
+    Live state if a cycle is mid-run; otherwise the last-completion timestamp
+    from watchlist_today (which is the canonical 'cycle finished' marker).
+    """
+    if _research_in_progress["active"]:
+        pct = (_research_in_progress["progress"] / _research_in_progress["total"] * 100
+               if _research_in_progress["total"] else 0)
+        elapsed_s = int((datetime.now() - _research_in_progress['started_at']).total_seconds())
+        return (f"🔄 **Running** — {_research_in_progress['progress']}/"
+                f"{_research_in_progress['total']} ({pct:.0f}%) · {elapsed_s // 60}m elapsed")
+
+    meta = watchlist_today.get_metadata()
+    if not meta["generated_at"]:
+        return "_No research cycle yet — click to run, or wait for overnight cron._"
+    finished = datetime.fromtimestamp(meta["generated_at"]).strftime("%Y-%m-%d %H:%M")
+    age_h = (time.time() - meta["generated_at"]) / 3600
+    freshness = "🟢" if age_h < 12 else ("🟡" if age_h < 24 else "🔴")
+    return (f"{freshness} Last cycle: **{finished}** "
+            f"({age_h:.1f}h ago) · {meta['count']} candidates")
 
 
 def _build_watchlist_rows(analyses: list, batch_funds: dict) -> list:
@@ -744,6 +757,73 @@ def trigger_research_cycle_async() -> str:
     ).start()
     return ("🔬 Research cycle started in background. "
             "ETA ~15-25 min. Telegram progress at 25/50/75/100%.")
+
+
+# ─── Watchlist Today UI helpers ──────────────────────────────────────────────
+
+WATCHLIST_COLS = ["Rank", "Ticker", "Rating", "Quant", "AI", "Price", "Chg%",
+                  "Technicals", "Fundamentals"]
+
+
+def _watchlist_rows_to_df(rows: list) -> pd.DataFrame:
+    """Convert watchlist_today rows to a Gradio-friendly DataFrame."""
+    if not rows:
+        return pd.DataFrame(columns=WATCHLIST_COLS)
+    return pd.DataFrame([
+        {
+            "Rank":         r["rank"],
+            "Ticker":       r["ticker"],
+            "Rating":       r["recommendation"],
+            "Quant":        r["quant_score"],
+            "AI":           r["ai_score"] if r["ai_score"] is not None else "—",
+            "Price":        f"${r['price']:.2f}",
+            "Chg%":         f"{r['change_pct']:+.2f}%",
+            "Technicals":   r["technicals_summary"],
+            "Fundamentals": r["fundamentals_summary"],
+        }
+        for r in rows
+    ])
+
+
+def render_watchlist_header() -> str:
+    """Markdown caption above the BUY watchlist section."""
+    meta = watchlist_today.get_metadata()
+    if not meta["generated_at"]:
+        return ("### 🎯 Today's Watchlist\n"
+                "_No watchlist generated yet. Click **🔬 Run Research Cycle** at the top, "
+                "or wait for the overnight cron (see `SCHEDULING.md`)._")
+    finished = datetime.fromtimestamp(meta["generated_at"]).strftime("%Y-%m-%d %H:%M")
+    age_h = (time.time() - meta["generated_at"]) / 3600
+    age_label = f"{age_h:.1f}h ago" if age_h < 48 else f"{age_h/24:.1f}d ago"
+    freshness = "🟢" if age_h < 12 else ("🟡" if age_h < 24 else "🔴")
+    all_rows = watchlist_today.get_all()
+    n_buy = sum(1 for r in all_rows if r["recommendation"] == "BUY")
+    n_hold = sum(1 for r in all_rows if r["recommendation"] == "HOLD")
+    n_sell = sum(1 for r in all_rows if r["recommendation"] == "SELL")
+    breakdown = []
+    if n_buy:  breakdown.append(f"**{n_buy} BUY**")
+    if n_hold: breakdown.append(f"{n_hold} HOLD")
+    if n_sell: breakdown.append(f"{n_sell} SELL")
+    return (f"### 🎯 Today's Watchlist — {' · '.join(breakdown) or 'empty'}\n"
+            f"{freshness} Generated **{finished}** ({age_label}) by overnight research cycle "
+            f"(or the manual 🔬 button). LiveAgent subscribes to ALL of these for crossing detection.")
+
+
+def render_watchlist_buys() -> pd.DataFrame:
+    """BUY-only slice for the primary table."""
+    rows = [r for r in watchlist_today.get_all() if r["recommendation"] == "BUY"]
+    return _watchlist_rows_to_df(rows)
+
+
+def render_watchlist_holds() -> pd.DataFrame:
+    """HOLD slice (and any SELLs in the watchlist) for the collapsed section."""
+    rows = [r for r in watchlist_today.get_all() if r["recommendation"] != "BUY"]
+    return _watchlist_rows_to_df(rows)
+
+
+def refresh_watchlist_view():
+    """Click handler for the Watchlist tab's refresh button. Returns header + 2 tables."""
+    return render_watchlist_header(), render_watchlist_buys(), render_watchlist_holds()
 
 
 def render_alpaca_panel() -> str:
@@ -1841,6 +1921,34 @@ if START_BACKGROUND_SERVICES:
 else:
     logger.log("ℹ️ NUROQ_BACKGROUND_SERVICES=0 — skipping position monitor.", level="INFO")
 
+# Phase 4: News poller. Gated by the same flag so cron jobs don't double-poll.
+# Tickers source = watchlist_today + currently-held positions (deduped, top 35).
+news_poller = None
+if START_BACKGROUND_SERVICES:
+    from news_engine import NewsPoller
+
+    def _news_poller_tickers():
+        wl = list(watchlist_today.get_tickers() or [])
+        held = []
+        try:
+            df = portfolio_mgr.get_portfolio()
+            held = df['Ticker'].tolist() if not df.empty else []
+        except Exception:
+            pass
+        # Watchlist first (ranked), then held positions appended.
+        return wl + [t for t in held if t not in wl]
+
+    news_poller = NewsPoller(
+        get_tickers_fn=_news_poller_tickers,
+        logger=logger,
+        polygon_api_key=POLYGON_API_KEY,
+        interval_seconds=int(os.getenv("NUROQ_NEWS_INTERVAL_SECONDS", "1800")),
+        max_tickers_per_cycle=int(os.getenv("NUROQ_NEWS_MAX_TICKERS", "35")),
+    )
+    news_poller.start()
+else:
+    logger.log("ℹ️ NUROQ_BACKGROUND_SERVICES=0 — skipping news poller.", level="INFO")
+
 def update_agent_status():
     """Returns status snapshot for the Agent tab (3 outputs: status_md, last_run, next_run)."""
     s = agent.status()
@@ -1929,12 +2037,15 @@ with gr.Blocks(theme=custom_theme, js=theme_manager_js) as demo:
             gr.Image("nuroq_logo.png", show_label=False, container=False, width=100)
         with gr.Column(scale=4):
             gr.Markdown("# 🧠 NuroQ — Frontier Neural Quant\n`Neural · Ensemble · Sovereign Agent`")
-        with gr.Column(scale=1, min_width=200):
+        with gr.Column(scale=1, min_width=220):
             refresh_cache_btn = gr.Button("🔬 Run Research Cycle", size="sm", variant="primary")
             cache_status_md = gr.Markdown(_research_status_text())
-            theme_toggle_btn = gr.Button("🌙 Switch to Dark Mode", size="sm")
+            with gr.Row():
+                refresh_status_btn = gr.Button("↻ Status", size="sm", scale=1)
+                theme_toggle_btn = gr.Button("🌙 Dark Mode", size="sm", scale=2)
 
     refresh_cache_btn.click(trigger_research_cycle_async, outputs=[cache_status_md])
+    refresh_status_btn.click(_research_status_text, outputs=[cache_status_md])
 
     # ── ALPACA ACCOUNT PANEL ───────────────────────────────────────────────
     with gr.Row():
@@ -2031,6 +2142,33 @@ with gr.Blocks(theme=custom_theme, js=theme_manager_js) as demo:
             signals_table = gr.DataFrame(
                 headers=["Timestamp", "Ticker", "Name", "Industry", "Price", "Technicals", "Fundamentals", "Signal", "AI Score", "Quant Score"],
                 wrap=True
+            )
+
+        with gr.TabItem("🎯 Watchlist"):
+            wl_header_md = gr.Markdown(render_watchlist_header())
+            refresh_wl_btn = gr.Button("🔄 Refresh Watchlist", variant="primary")
+
+            gr.Markdown("### 🟢 BUY Signals")
+            wl_buy_table = gr.DataFrame(
+                value=render_watchlist_buys(),
+                headers=WATCHLIST_COLS,
+                wrap=True,
+                interactive=False,
+            )
+
+            with gr.Accordion("👀 Watching for crossings — HOLDs near threshold "
+                              "(LiveAgent monitors these for HOLD→BUY transitions during the session)",
+                              open=False):
+                wl_hold_table = gr.DataFrame(
+                    value=render_watchlist_holds(),
+                    headers=WATCHLIST_COLS,
+                    wrap=True,
+                    interactive=False,
+                )
+
+            refresh_wl_btn.click(
+                refresh_watchlist_view,
+                outputs=[wl_header_md, wl_buy_table, wl_hold_table],
             )
 
         with gr.TabItem("💼 Portfolio"):

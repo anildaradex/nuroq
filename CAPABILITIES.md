@@ -1,7 +1,7 @@
 # NuroQ — Capabilities & Architecture
 
 > Living reference for what this tool does, how it's wired, and where its limits are.
-> **Last updated:** 2026-05-23 (Phase 3a ships: LiveAgent — sub-100ms reactive engine driven by Alpaca WebSocket bars, threshold crossings, daily cap)
+> **Last updated:** 2026-05-24 (Phase 4a ships: news engine — NewsPoller + NewsClassifier + live-agent final-check gates BUY approvals on breaking news. Master test suite expanded to 61 tests, all passing.)
 >
 > **For where this is going:** see `ARCHITECTURE.md` for the multi-phase rebuild plan (3-tier system: overnight research → premarket refresh → live reactive agent). See `SCHEDULING.md` for cron / launchd setup.
 >
@@ -54,6 +54,24 @@
 **Useful for:** Daily morning routine — find today's quant-grade momentum setups without manually screening.
 
 **Implementation:** `dashboard.py:deep_market_scan` (line ~1359).
+
+## 3a. News engine (Phase 4a)
+
+**What runs in the background:**
+- `NewsPoller` thread polls Polygon news for top 35 watchlist + held tickers every 30 min
+- Each headline classified by keyword regex into 4 buckets: POSITIVE_BOOST / NEUTRAL / NEGATIVE_WARNING / NEGATIVE_BLOCK
+- New (non-dup) headlines persisted to `news_cache` with classification
+
+**What it does for trading decisions:**
+- LiveAgent's `_handle_buy_crossing` reads the latest news classification (single SQLite SELECT, <5ms) before firing approval:
+  - **NEGATIVE_BLOCK** (halt, SEC investigation, fraud, bankruptcy, delisting, …): **suppresses** approval, logs `SUPPRESSED_NEWS` in live_triggers, no Telegram message
+  - **NEGATIVE_WARNING** (downgrade, miss, lawsuit, recall, CEO departure, …): fires approval but adds `⚠️ Recent negative news: …` to the message
+  - **POSITIVE_BOOST** (earnings beat, FDA approval, contract win, buyback, …): fires approval with `📈 Catalyst: …` prepended
+  - **NEUTRAL / no news**: fires normally
+
+**Useful for:** Avoiding approvals on stocks that just had bad news, and tagging approvals with positive catalysts so you can prioritize.
+
+**Implementation:** `news_engine.py:NewsPoller` + `NewsClassifier` + `check_news_for_crossing`; integrated at `live_agent.py:_handle_buy_crossing`.
 
 ## 3. Run an autonomous agent loop (LiveAgent — Phase 3a)
 
@@ -260,7 +278,8 @@ Three-tier where applicable: L1 in-memory (fast, lost on restart) → L2 SQLite 
 | `fundamentals_cache` | Persistent yfinance fundamentals (24h TTL) — Phase 1 of rebuild |
 | `ai_scores_cache` | Persistent Gemma analysis output per ticker (24h TTL) — Phase 1 of rebuild |
 | `watchlist_today` | Ranked candidates from overnight research cycle (Phase 2) |
-| `live_triggers` | Every threshold crossing the LiveAgent detects (Phase 3a). Columns: ts, ticker, direction (BUY/SELL), score_before, score_after, price, action (FIRED/SUPPRESSED_CAP/SUPPRESSED_HELD), notes |
+| `live_triggers` | Every threshold crossing the LiveAgent detects (Phase 3a). Columns: ts, ticker, direction (BUY/SELL), score_before, score_after, price, action (FIRED/SUPPRESSED_CAP/SUPPRESSED_HELD/SUPPRESSED_NEWS), notes |
+| `news_cache` | Classified news per ticker (Phase 4a). Columns: ticker, headline, source, classification (POSITIVE_BOOST/NEUTRAL/NEGATIVE_WARNING/NEGATIVE_BLOCK), published_at, ingested_at. PK on (ticker, headline) → INSERT OR IGNORE de-dupes |
 | `portfolio` | Current open positions (synced from Alpaca) |
 | `all_signals` | Persistent log of every analysis (1000+ rows from 2026-04 → present) |
 | `shadow_trades` | Legacy table from old SQLite-only execution (still initialized, unused in main flow) |

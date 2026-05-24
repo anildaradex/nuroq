@@ -54,5 +54,13 @@
             "score": 68,
             "reasoning": "NVDA exhibits a strong upward trend on both daily and weekly charts, supported by positive momentum indicators. The forward P/E ratio suggests potential for future earnings growth, and social sentimen..."
         }
+    ],
+    "MSFT": [
+        {
+            "timestamp": "2026-05-24 00:17:04",
+            "rating": "BUY",
+            "score": 65,
+            "reasoning": "MSFT exhibits a strong upward trend on both daily and weekly charts, supported by positive momentum indicators. Fundamentals are solid, with reasonable valuation metrics and steady revenue growth. Whi..."
+        }
     ]
 }

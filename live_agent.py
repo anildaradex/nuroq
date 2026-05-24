@@ -317,11 +317,38 @@ class LiveAgent:
             )
             return
 
+        # Phase 4: News final-check. Read from news_cache (no API call — hot
+        # path safe). NEGATIVE_BLOCK suppresses entirely; WARNING/BOOST
+        # decorate the reasoning string; NEUTRAL fires normally.
+        news_tag = ""
+        try:
+            from news_engine import check_news_for_crossing
+            news = check_news_for_crossing(ticker)
+        except Exception as e:
+            self.logger.log(f"⚠️ News check for {ticker} failed: {e}", level="WARNING")
+            news = None
+
+        if news and news["classification"] == "NEGATIVE_BLOCK":
+            live_triggers.log(
+                ticker, "BUY", prev, new, state.last_price or 0,
+                action="SUPPRESSED_NEWS",
+                notes=f"BLOCK: {news['headline'][:200]}",
+            )
+            self.logger.log(
+                f"🛑 LiveAgent: BUY crossing for {ticker} suppressed by news "
+                f"(NEGATIVE_BLOCK): {news['headline'][:120]}", level="WARNING"
+            )
+            return
+        elif news and news["classification"] == "NEGATIVE_WARNING":
+            news_tag = f"\n⚠️ Recent negative news: {news['headline'][:200]}"
+        elif news and news["classification"] == "POSITIVE_BOOST":
+            news_tag = f"\n📈 Catalyst: {news['headline'][:200]}"
+
         # Build a concise reasoning string locally (no LLM in hot path).
         reasoning = (
             f"LIVE crossing: {ticker} score {prev} → {new} (≥ {BUY_CROSSING_THRESHOLD}). "
             f"Price ${state.last_price:.2f}. Cached AI={(ai_score_cache.get(ticker) or {}).get('score', '?')}. "
-            f"Weekly trend: {state.weekly_trend}."
+            f"Weekly trend: {state.weekly_trend}.{news_tag}"
         )
 
         live_triggers.log(

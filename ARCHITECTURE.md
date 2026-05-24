@@ -4,8 +4,8 @@
 > user-facing functionality; `SCHEDULING.md` for how to schedule the overnight
 > cycle; this doc describes where we're going.
 >
-> **Last updated:** 2026-05-23 (Phase 3a ships)
-> **Status:** Phases 1, 2, 3a complete · Phase 3b (robustness) + Phase 4 (news) next
+> **Last updated:** 2026-05-24 (Phase 4a ships + full regression suite at 61 tests)
+> **Status:** Phases 1, 2, 3a, 4a complete · Phase 3b (robustness) + Phase 4b (LLM re-score on shock) next
 
 ---
 
@@ -163,24 +163,33 @@ Out of scope for Phase 3a, queued as follow-ups:
 
 ---
 
-### Phase 4 — News reactivity
+### Phase 4a — News reactivity (final-check gating) ✅ DONE
 
-**Goal:** Detect breaking news per ticker and refresh AI scores accordingly.
+- `news_engine.py` — three components: `NewsClassifier` (pure-function keyword
+  classifier, 4 buckets: POSITIVE_BOOST / NEUTRAL / NEGATIVE_WARNING /
+  NEGATIVE_BLOCK), `NewsPoller` (background thread, polls top-N watchlist +
+  held positions every 30 min, writes new headlines + classifications to
+  news_cache), `check_news_for_crossing(ticker)` (hot-path safe helper for
+  LiveAgent — single SELECT, no API call)
+- `news_cache` SQLite table — (ticker, headline, source, classification,
+  published_at, ingested_at) with PRIMARY KEY (ticker, headline) so
+  `INSERT OR IGNORE` de-dupes naturally
+- `LiveAgent._handle_buy_crossing` now calls `check_news_for_crossing` before
+  firing: NEGATIVE_BLOCK suppresses + logs `SUPPRESSED_NEWS`; WARNING/BOOST
+  decorate the reasoning string with a tag; NEUTRAL/no-news fires normally
+- News poller gated by `NUROQ_BACKGROUND_SERVICES` so cron jobs don't double-poll
+- Budget: 35 tickers × every 30 min = 70 Polygon calls/hr (well under 300/hr free-tier limit)
+- Test coverage: 4 classifier buckets, news_cache round-trip + dedup + TTL,
+  LiveAgent suppress/decorate paths
 
-**Deliverables:**
-- Periodic news poller (every 15 min during market hours for watchlist tickers)
-- New SQLite table `news_cache` (ticker, headline, body, source, published_at)
-- Shock detector: regex on title for `{earnings, downgrade, FDA, halt, M&A,
-  guidance, recall, lawsuit}`
-- On shock: enqueue LLM re-score for that ticker; bump priority in watchlist
-- Single-worker LLM queue so re-scores don't contend for the GPU
+### Phase 4b — News-driven LLM re-score (next)
 
-**Open question:** News source. Options:
-- Polygon news REST (free tier limits to 5 req/min — too low for 500 tickers
-  every 15 min = 2,000 calls/hr)
-- Alpaca news WebSocket (free tier has limited symbol universe)
-- Polygon paid tier ($30/mo, unlimited)
-- RSS feeds from Yahoo Finance / SeekingAlpha / etc. (free but messy)
+Out of scope for Phase 4a, queued:
+- When shock detected, call `ai_score_cache.invalidate(ticker)` so next live
+  read forces a fresh score
+- Single-worker LLM queue to handle re-score requests off the hot path
+- AlpacaNewsStream WebSocket as alternative push source (vs polling)
+- Sentiment-via-LLM augmentation for headlines the keyword classifier misses
 
 ---
 
