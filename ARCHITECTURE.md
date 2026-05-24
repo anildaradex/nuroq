@@ -4,8 +4,8 @@
 > user-facing functionality; `SCHEDULING.md` for how to schedule the overnight
 > cycle; this doc describes where we're going.
 >
-> **Last updated:** 2026-05-23 (Phase 2 ships)
-> **Status:** Phases 1 + 2 complete · Phase 3 next
+> **Last updated:** 2026-05-23 (Phase 3a ships)
+> **Status:** Phases 1, 2, 3a complete · Phase 3b (robustness) + Phase 4 (news) next
 
 ---
 
@@ -128,21 +128,38 @@ agent changes (Phase 3).
 
 ---
 
-### Phase 3 — Live reactive agent
+### Phase 3a — Live reactive agent ✅ DONE
 
-**Goal:** Replace cycle-based `AgentLoop` with WebSocket-driven reaction.
+- `live_agent.py` — `LiveAgent` class with `start` / `stop` / `_on_bar` /
+  `_evaluate` / `_check_crossings` / `status`
+- Reads `watchlist_today` + currently-held positions at start, subscribes via
+  `MarketStreamer.bar_callback` (new sibling to the existing notable-event
+  trigger_callback path)
+- Per-ticker in-memory state: `TickerState` (baseline daily bars, intraday H/L/V
+  rolling, last score, weekly trend, held flag)
+- Hot path on each bar (<100ms target): update intraday state → synthesize
+  today's bar → recompute technicals → pull cached fundamentals + AI score →
+  recompute final quant_score → check for threshold CROSSING (not above-threshold)
+- BUY crossing through 65↑ → existing async approval flow + bracket order
+- SELL crossing through 30↓ on held position → `close_position` + portfolio remove
+- Daily BUY cap (default 5) suppresses excess approvals with one notification
+- All crossings logged to `live_triggers` SQLite table with action taken
+- Off-hours guard: refuses to start unless `NUROQ_FORCE_LIVE=1` or market open
+- Fallback: if `watchlist_today` is empty, uses `TOP_TICKERS`
+- The old 4-hour `AgentLoop._run_cycle` is retired — only the LiveAgent runs
+  during market hours; the overnight research cycle (Phase 2) handles
+  universe-wide refresh
+- Agent tab UI now shows live status: subscribed/held counts, bars processed,
+  BUYs fired/cap, SELLs fired, suppressed (cap), started_at, last bar time
 
-**Deliverables:**
-- New `live_agent.py` module
-- Reads `watchlist_today` at start of market hours
-- Subscribes to all watchlist tickers via existing `MarketStreamer`
-- On bar trigger: read cached state, update technicals, fast re-score, check
-  for threshold crossing
-- On crossing: Telegram approval via existing `gatekeeper`
-- Existing 4-hour `AgentLoop._run_cycle` is retired during market hours
-  (research cycle handles the universe scan)
+### Phase 3b — Live agent robustness (next)
 
-**Out of scope for Phase 3:** News reactivity (Phase 4), LLM queue refinement.
+Out of scope for Phase 3a, queued as follow-ups:
+- WebSocket reconnect on disconnect (current alpaca-py `_run_forever` use is fragile)
+- Stale-bar detection (alert if no bars received for N minutes)
+- Hysteresis on crossings (require N consecutive bars before firing)
+- Per-ticker cooldown after firing
+- News final-check (deferred to Phase 4)
 
 ---
 

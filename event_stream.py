@@ -28,8 +28,15 @@ class MarketStreamer:
     """
 
     def __init__(self, trigger_callback, debounce_seconds: int = 300,
-                 max_callback_workers: int = 2):
+                 max_callback_workers: int = 2, bar_callback=None):
+        # trigger_callback fires on NOTABLE events (breakout, volatility spike)
+        # with per-ticker debounce + thread pool dispatch. Used by ad-hoc
+        # LLM-driven analysis.
         self.trigger_callback = trigger_callback
+        # bar_callback (optional) fires on EVERY bar, inline on the WebSocket
+        # loop, no debounce, no executor. Used by the Phase 3 live agent for
+        # fast deterministic re-scoring.
+        self.bar_callback = bar_callback
         self.debounce_seconds = debounce_seconds
         self.watchlist = []
         self.is_running = False
@@ -120,14 +127,22 @@ class MarketStreamer:
         ticker = bar.symbol
         price = bar.close
 
+        # 1. Fire every-bar callback inline (Phase 3 live agent path).
+        #    Must be fast (<100ms) — runs on the WebSocket loop.
+        if self.bar_callback is not None:
+            try:
+                self.bar_callback(bar)
+            except Exception as e:
+                _log.warning("bar_callback for %s raised: %s", ticker, e)
+
         prev_price = self.last_prices.get(ticker)
         self.last_prices[ticker] = price
 
-        # Volatility trigger: ≥2% move in one minute
+        # 2. Volatility trigger: ≥2% move in one minute (notable event path)
         if prev_price and abs((price - prev_price) / prev_price) >= 0.02:
             self._maybe_fire(ticker, "volatility>=2%")
 
-        # Rolling history trigger: ≥3% above 5-min average (breakout)
+        # 3. Rolling history trigger: ≥3% above 5-min average (breakout)
         if ticker in self.price_history:
             self.price_history[ticker].append(price)
             if len(self.price_history[ticker]) >= 5:
