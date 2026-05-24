@@ -450,6 +450,88 @@ class WatchlistToday:
         return [r[0] for r in rows]
 
 
+# ---------------------------------------------------------------------------
+# Live Triggers Log (Phase 3 of ARCHITECTURE.md rebuild)
+# ---------------------------------------------------------------------------
+
+class LiveTriggers:
+    """
+    Persistent log of every threshold crossing detected by the live agent.
+    Each row records the crossing event + what action was taken. Used for
+    post-hoc analysis ("did we approve / suppress / cap?") and threshold tuning.
+    """
+
+    def __init__(self, db_path: str = DB_PATH):
+        self.db_path = db_path
+        self._lock = threading.Lock()
+        self._init_table()
+
+    def _init_table(self):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS live_triggers (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts            REAL NOT NULL,
+                    ticker        TEXT NOT NULL,
+                    direction     TEXT NOT NULL,
+                    score_before  INTEGER,
+                    score_after   INTEGER,
+                    price         REAL,
+                    action        TEXT NOT NULL,
+                    notes         TEXT
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_live_triggers_ts ON live_triggers(ts)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_live_triggers_ticker ON live_triggers(ticker)")
+            conn.execute("PRAGMA journal_mode=WAL")
+
+    def log(
+        self,
+        ticker: str,
+        direction: str,
+        score_before: Optional[int],
+        score_after: int,
+        price: float,
+        action: str,
+        notes: str = "",
+    ) -> None:
+        with self._lock:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    "INSERT INTO live_triggers (ts, ticker, direction, score_before, score_after, "
+                    "price, action, notes) VALUES (?,?,?,?,?,?,?,?)",
+                    (time.time(), ticker.upper(), direction.upper(),
+                     int(score_before) if score_before is not None else None,
+                     int(score_after), float(price), action.upper(), notes[:500]),
+                )
+
+    def get_recent(self, limit: int = 50) -> list:
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT ts, ticker, direction, score_before, score_after, price, action, notes "
+                "FROM live_triggers ORDER BY ts DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [
+            {
+                "ts": r[0], "ticker": r[1], "direction": r[2],
+                "score_before": r[3], "score_after": r[4], "price": r[5],
+                "action": r[6], "notes": r[7],
+            }
+            for r in rows
+        ]
+
+    def count_today(self, action: str = "FIRED") -> int:
+        """Count rows matching an action since start of today (UTC, good enough)."""
+        start_of_day = time.time() - (time.time() % 86400)
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM live_triggers WHERE ts >= ? AND action = ?",
+                (start_of_day, action.upper()),
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+
 # Module-level singletons
 rate_limiter      = PolygonRateLimiter()
 news_cache        = AppCache(ttl_seconds=7200)   # 2 hours (L1 in-memory)
@@ -458,6 +540,7 @@ history_cache     = HistoryCache(db_path=DB_PATH)
 fundamentals_cache = FundamentalsCache(db_path=DB_PATH, ttl_hours=24)  # L2 persistent
 ai_score_cache    = AIScoreCache(db_path=DB_PATH, ttl_hours=24)        # L2 persistent
 watchlist_today    = WatchlistToday(db_path=DB_PATH)                   # Phase 2 output
+live_triggers      = LiveTriggers(db_path=DB_PATH)                     # Phase 3 crossing log
 
 
 # ---------------------------------------------------------------------------

@@ -32,7 +32,7 @@ from event_stream import MarketStreamer
 from data_fetcher import (
     PolygonRateLimiter, AppCache,
     rate_limiter, news_cache, funds_cache,
-    fundamentals_cache, ai_score_cache, watchlist_today,
+    fundamentals_cache, ai_score_cache, watchlist_today, live_triggers,
     get_polygon_news, get_full_history,
     get_fundamentals, get_fundamentals_batch_async,
     get_history_batch_async,
@@ -1561,119 +1561,153 @@ if START_BACKGROUND_SERVICES:
 else:
     logger.log("ℹ️ NUROQ_BACKGROUND_SERVICES=0 — skipping Telegram bot polling.", level="INFO")
 
+# ─── Live agent callback adapters ─────────────────────────────────────────────
+# These bridge the LiveAgent (which knows nothing about Gradio/Telegram/Alpaca
+# specifics) to the existing async approval + close-position machinery.
+
+def _live_fire_buy(ticker: str, price: float, score: int, reasoning: str) -> None:
+    """LiveAgent → Telegram approval → Alpaca bracket (all async)."""
+    sizing = calculate_sizing(price, atr=max(price * 0.02, 0.5), account=_live_equity())
+    shares_int = int(sizing['shares'])
+    if shares_int < 1:
+        logger.log(f"⚠️ LiveAgent: {ticker} sizing rounds to 0 shares — skipping.",
+                   level="WARNING")
+        return
+
+    ctx = {
+        'ticker':         ticker,
+        'price':          price,
+        'final_score':    score,
+        'recommendation': "BUY",
+        'reasoning':      reasoning,
+        'sl':             sizing['sl'],
+        'tp':             sizing['tp'],
+        'shares':         shares_int,
+    }
+
+    def _await_and_execute(c):
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                gatekeeper.request_approval(c['ticker'], c['price'], c['final_score'], c['reasoning']),
+                gatekeeper.loop,
+            )
+            decision = future.result(timeout=305)
+            logger.log(f"📱 LiveAgent Telegram decision for {c['ticker']}: {decision}")
+            if decision != "EXECUTE":
+                return
+            exec_result = alpaca_api.submit_bracket_order(
+                c['ticker'], 'buy', c['shares'], sl=c['sl'], tp=c['tp'],
+            )
+            portfolio_mgr.add_position(
+                c['ticker'], c['shares'], c['price'],
+                sl=c['sl'], tp=c['tp'],
+                score=c['final_score'], rating=c['recommendation'],
+            )
+            agent_memory.log_decision(c['ticker'], c['recommendation'], c['final_score'], c['reasoning'])
+            gatekeeper.send_notification(
+                f"✅ LiveAgent trade: BUY {c['shares']} {c['ticker']} @ ~${c['price']:.2f}\n"
+                f"SL: ${c['sl']} | TP: ${c['tp']} | Score: {c['final_score']}"
+            )
+        except Exception as e:
+            logger.log(f"⚠️ LiveAgent approve/execute for {c['ticker']}: {e}", level="ERROR")
+
+    threading.Thread(
+        target=_await_and_execute, args=(ctx,),
+        name=f"live-approval-{ticker}", daemon=True,
+    ).start()
+
+
+def _live_fire_sell(ticker: str, price: float, score: int, reasoning: str) -> None:
+    """LiveAgent → Alpaca close_position → portfolio remove → Telegram notify."""
+    try:
+        close_result = alpaca_api.close_position(ticker)
+        gatekeeper.send_notification(
+            f"📉 LiveAgent EXIT: {ticker}\nScore: {score} | Price ${price:.2f}\n"
+            f"{close_result}\nReason: {reasoning[:200]}"
+        )
+        portfolio_mgr.remove_position(ticker)
+        agent_memory.log_decision(ticker, "SELL", score, reasoning)
+    except Exception as e:
+        logger.log(f"⚠️ LiveAgent sell-close for {ticker}: {e}", level="ERROR")
+
+
+def _live_get_held_tickers() -> list:
+    """List currently-held ticker symbols from the portfolio table."""
+    try:
+        df = portfolio_mgr.get_portfolio()
+        return df['Ticker'].tolist() if not df.empty else []
+    except Exception:
+        return []
+
+
+# ─── AgentLoop (Phase 3: live reactive, replaces the 4-hour scan cycle) ──────
+
+from live_agent import LiveAgent, is_market_hours
+
+
 class AgentLoop:
-    def __init__(self, interval_hours=4):
-        self.interval_hours = interval_hours
+    """
+    Phase 3 thin wrapper. Public surface unchanged (start/stop/is_running)
+    so existing Gradio buttons keep working. Under the hood: spins up a
+    LiveAgent that subscribes to today's watchlist via MarketStreamer and
+    reacts to live bars with cached-state evaluation.
+
+    The old 4-hour heavy-scan cycle is retired — the overnight research
+    cycle (cron-scheduled research_cycle.py) replaces it.
+    """
+
+    def __init__(self):
         self.is_running = False
+        self.started_at = None
+        # last_run / next_run kept for backward compat with existing UI bindings.
         self.last_run = None
         self.next_run = None
-        self.thread = None
-        self._stop_event = threading.Event()
-        
-        # Initialize the Event Streamer
+
+        # Streamer is shared between the existing `trigger_callback` path
+        # (notable-event LLM analysis, debounced) and the new `bar_callback`
+        # path (every-bar deterministic re-score for LiveAgent).
         def stream_trigger(ticker):
-            logger.log(f"⚡ [Event Stream] Triggering analysis for {ticker}")
+            logger.log(f"⚡ [Event Stream] Notable event for {ticker}, triggering deep analysis.")
             analyze_stock(ticker, is_auto=True)
-            
+
         self.streamer = MarketStreamer(trigger_callback=stream_trigger)
+        self.live_agent = LiveAgent(
+            streamer=self.streamer,
+            logger=logger,
+            fire_buy_callback=_live_fire_buy,
+            fire_sell_callback=_live_fire_sell,
+            get_held_tickers=_live_get_held_tickers,
+        )
 
     def start(self):
         if self.is_running:
             return "Agent is already running."
+
+        force = os.getenv("NUROQ_FORCE_LIVE", "0") == "1"
+        start_msg = self.live_agent.start(force=force)
+        # If the live agent refused (market closed + no force flag), surface that.
+        if not self.live_agent.is_running:
+            return start_msg
+
         self.is_running = True
-        self._stop_event.clear()
-        self.thread = threading.Thread(target=self._main_loop, daemon=True)
-        self.thread.start()
-        self.streamer.start()
-        logger.log("🤖 Autonomous Agent & Event Stream Started.")
-        return "Agent Started."
+        self.started_at = datetime.now()
+        self.last_run = self.started_at
+        # next_run is semantically obsolete for live mode; show "continuous" via UI.
+        self.next_run = None
+        logger.log(f"🤖 AgentLoop started in LIVE reactive mode. {start_msg}")
+        return f"Agent Started (Live Reactive). {start_msg}"
 
     def stop(self):
-        self.is_running = False
-        self._stop_event.set()
+        stop_msg = self.live_agent.stop()
         self.streamer.stop()
-        logger.log("🛑 Autonomous Agent Stopping...")
-        return "Agent Stopped."
+        self.is_running = False
+        logger.log(f"🛑 AgentLoop stopping. {stop_msg}")
+        return f"Agent Stopped. {stop_msg}"
 
-    def _main_loop(self):
-        while not self._stop_event.is_set():
-            self.last_run = datetime.now()
-            self.next_run = self.last_run + timedelta(hours=self.interval_hours)
-            
-            try:
-                self._run_cycle()
-            except Exception as e:
-                logger.log(f"❌ Agent Cycle Error: {e}", level="ERROR")
-            
-            logger.log(f"💤 Agent sleeping. Next run at {self.next_run.strftime('%H:%M:%S')}")
-            # Sleep in small increments to allow for stopping
-            wait_time = self.interval_hours * 3600
-            for _ in range(int(wait_time)):
-                if self._stop_event.is_set():
-                    break
-                time.sleep(1)
+    def status(self) -> dict:
+        """Live status snapshot for the UI panel."""
+        return self.live_agent.status()
 
-    def _run_cycle(self):
-        logger.log("🚀 Starting Autonomous Scan Cycle...")
-        # 1. Reuse deep_market_scan logic (internal version)
-        target_date = get_last_trading_day()
-        date_20d_ago = get_trading_day_n_ago(20)
-        
-        rate_limiter.wait()
-        url_curr = f"https://api.polygon.io/v2/aggs/grouped/locale/us/market/stocks/{target_date}?adjusted=true&apiKey={POLYGON_API_KEY}"
-        rate_limiter.wait()
-        url_hist = f"https://api.polygon.io/v2/aggs/grouped/locale/us/market/stocks/{date_20d_ago}?adjusted=true&apiKey={POLYGON_API_KEY}"
-        
-        resp_c = requests.get(url_curr, timeout=20).json()
-        resp_h = requests.get(url_hist, timeout=20).json()
-        
-        if "results" not in resp_c:
-            logger.log("⚠️ No market results for today, skipping cycle.", level="WARNING")
-            return
-            
-        hist_prices = {item['T']: item['c'] for item in resp_h.get("results", [])}
-        
-        candidates = []
-        for item in resp_c["results"]:
-            ticker = item['T']
-            price = item.get('c', 0)
-            vol = item.get('v', 0)
-            
-            # AppVision Filter: Liquid and Momentum
-            if price < 5 or vol < 1000000: continue
-            
-            price_20d = hist_prices.get(ticker)
-            if not price_20d or price <= price_20d: continue
-            
-            change_pct = (price - item.get('o', price)) / item.get('o', 1)
-            if change_pct < 0.02: continue 
-            
-            candidates.append(item)
-        
-        candidates.sort(key=lambda x: x.get('v', 0), reverse=True)
-        top_picks = candidates[:100]
-        logger.log(f"🔬 Filtered {len(top_picks)} movers for AI analysis.")
-        
-        # Set Streamer watchlist
-        tickers_list = [t['T'] for t in top_picks]
-        self.streamer.set_watchlist(tickers_list)
-        logger.log(f"📡 Event Stream listening to {len(tickers_list)} tickers.")
-
-        for item in top_picks:
-            if self._stop_event.is_set():
-                logger.log("🛑 Agent stop requested during scan, halting.")
-                break
-
-            ticker = item['T']
-            logger.log(f"🔍 [Agent] Analyzing {ticker}...")
-
-            try:
-                analyze_stock(ticker, is_auto=True)
-            except Exception as e:
-                logger.log(f"⚠️ [Agent] Error analyzing {ticker}: {e}", level="ERROR")
-
-            # Rate limit buffer - 20 seconds is safer for free tier
-            time.sleep(20)
 
 # Global Agent Instance
 agent = AgentLoop()
@@ -1808,10 +1842,30 @@ else:
     logger.log("ℹ️ NUROQ_BACKGROUND_SERVICES=0 — skipping position monitor.", level="INFO")
 
 def update_agent_status():
-    status = "Running" if agent.is_running else "Stopped"
-    last = agent.last_run.strftime("%H:%M:%S") if agent.last_run else "N/A"
-    nxt = agent.next_run.strftime("%H:%M:%S") if agent.next_run else "N/A"
-    return f"### Status: {status}", last, nxt
+    """Returns status snapshot for the Agent tab (3 outputs: status_md, last_run, next_run)."""
+    s = agent.status()
+    if s["running"]:
+        status = (
+            f"### 🟢 LiveAgent Running\n"
+            f"Subscribed: **{s['subscribed_tickers']}** tickers "
+            f"({s['held_in_watchlist']} held positions) · "
+            f"Bars processed: **{s['bars_processed']:,}**\n"
+            f"BUYs fired today: **{s['buys_fired_today']}/{s['buys_cap']}** · "
+            f"SELLs fired: **{s['sells_fired_today']}** · "
+            f"Suppressed (cap): {s['buys_suppressed_cap']}"
+        )
+        started = (datetime.fromisoformat(s["started_at"]).strftime("%H:%M:%S")
+                   if s.get("started_at") else "N/A")
+        if s.get("latest_bar_ts"):
+            last_bar = datetime.fromtimestamp(s["latest_bar_ts"]).strftime("%H:%M:%S")
+        else:
+            last_bar = "no bars yet"
+    else:
+        status = "### 🔴 LiveAgent Stopped"
+        started = "N/A"
+        last_bar = "N/A"
+
+    return status, started, last_bar
 
 def refresh_activity_log():
     return logger.get_logs()
@@ -1990,10 +2044,10 @@ with gr.Blocks(theme=custom_theme, js=theme_manager_js) as demo:
             with gr.Row():
                 st_a_btn = gr.Button("▶️ START AGENT", variant="primary")
                 sp_a_btn = gr.Button("⏹️ STOP AGENT", variant="stop")
-            ag_st = gr.Markdown("### Status: Stopped")
+            ag_st = gr.Markdown("### 🔴 LiveAgent Stopped")
             with gr.Row():
-                ag_last = gr.Textbox(label="Last Run")
-                ag_next = gr.Textbox(label="Next Run")
+                ag_last = gr.Textbox(label="Started At")
+                ag_next = gr.Textbox(label="Last Bar")
             ag_log = gr.DataFrame(headers=["Timestamp", "Ticker", "Action", "Price", "Shares", "Total"])
 
         with gr.TabItem("📜 Activity Log"):

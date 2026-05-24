@@ -1,7 +1,7 @@
 # NuroQ — Capabilities & Architecture
 
 > Living reference for what this tool does, how it's wired, and where its limits are.
-> **Last updated:** 2026-05-23 (Phase 2 ships: research_cycle.py + watchlist_today + 🔬 Run Research Cycle button + pending orders panel)
+> **Last updated:** 2026-05-23 (Phase 3a ships: LiveAgent — sub-100ms reactive engine driven by Alpaca WebSocket bars, threshold crossings, daily cap)
 >
 > **For where this is going:** see `ARCHITECTURE.md` for the multi-phase rebuild plan (3-tier system: overnight research → premarket refresh → live reactive agent). See `SCHEDULING.md` for cron / launchd setup.
 >
@@ -55,20 +55,25 @@
 
 **Implementation:** `dashboard.py:deep_market_scan` (line ~1359).
 
-## 3. Run an autonomous agent loop
+## 3. Run an autonomous agent loop (LiveAgent — Phase 3a)
 
 **Where:** Agent tab → Start
 
 **What it does:**
-- Runs every 4 hours by default
-- Each cycle: market snapshot → momentum filter → top 100 by volume → full analysis per ticker
-- Watchlist is auto-published to the real-time event streamer
-- BUY signals scoring ≥ 65 → Telegram approval message ("✅ EXECUTE" / "❌ CANCEL")
-- SELL signals on held positions, IF distress gate (RSI > 75 OR %B > 0.95 OR earnings risk) → auto-close at Alpaca
+- Reads today's watchlist (`watchlist_today`, populated by the overnight research cycle / 🔬 Run Research Cycle button) + currently-held positions
+- Subscribes to all of them via Alpaca WebSocket (every minute bar arrives ~150 times/min during market hours)
+- On every bar: recomputes technicals + quant score using **cached** fundamentals and AI score (no Polygon/yfinance/LLM in hot path — sub-100ms per bar)
+- Detects **threshold crossings** (not just above-threshold) — score goes from < 65 to ≥ 65 → BUY crossing; > 30 to ≤ 30 on held position → SELL crossing
+- BUY crossing → Telegram approval (async, UI not blocked)
+- SELL crossing on held → broker close + bracket cancellation
+- **Daily BUY cap (5 default)** prevents Telegram spam on market-wide rallies
+- All crossings logged to `live_triggers` SQLite table for review
 
-**Useful for:** Hands-off monitoring during market hours. You go about your day; Telegram pings when something passes the bar.
+**Market hours guard:** Won't start outside US equity hours (M-F 09:30-16:00 ET) unless `NUROQ_FORCE_LIVE=1` is set. Currently in testing mode? Set the env var.
 
-**Implementation:** `dashboard.py:AgentLoop` (line ~1241).
+**Useful for:** Truly reactive monitoring without an LLM call per bar. The overnight cycle does the heavy "is this a good name?" work; the live agent reacts to "is the technical state suddenly compelling?" in real time.
+
+**Implementation:** `live_agent.py:LiveAgent` + `dashboard.py:AgentLoop` (thin wrapper preserving Start/Stop buttons).
 
 ## 4. Real-time event-driven analysis
 
@@ -255,6 +260,7 @@ Three-tier where applicable: L1 in-memory (fast, lost on restart) → L2 SQLite 
 | `fundamentals_cache` | Persistent yfinance fundamentals (24h TTL) — Phase 1 of rebuild |
 | `ai_scores_cache` | Persistent Gemma analysis output per ticker (24h TTL) — Phase 1 of rebuild |
 | `watchlist_today` | Ranked candidates from overnight research cycle (Phase 2) |
+| `live_triggers` | Every threshold crossing the LiveAgent detects (Phase 3a). Columns: ts, ticker, direction (BUY/SELL), score_before, score_after, price, action (FIRED/SUPPRESSED_CAP/SUPPRESSED_HELD), notes |
 | `portfolio` | Current open positions (synced from Alpaca) |
 | `all_signals` | Persistent log of every analysis (1000+ rows from 2026-04 → present) |
 | `shadow_trades` | Legacy table from old SQLite-only execution (still initialized, unused in main flow) |
