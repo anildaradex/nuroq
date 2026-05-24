@@ -172,11 +172,292 @@ class HistoryCache:
                 )
 
 
+# ---------------------------------------------------------------------------
+# SQLite Fundamentals Cache (Phase 1 of ARCHITECTURE.md rebuild)
+# ---------------------------------------------------------------------------
+
+class FundamentalsCache:
+    """
+    Persistent yfinance fundamentals cache. Survives restarts so the overnight
+    research cycle (Tier 1) can populate it once and the live agent (Tier 3)
+    can read it without re-fetching during market hours.
+    """
+
+    def __init__(self, db_path: str = DB_PATH, ttl_hours: int = 24):
+        self.db_path = db_path
+        self.ttl_seconds = ttl_hours * 3600
+        self._lock = threading.Lock()
+        self._init_table()
+
+    def _init_table(self):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS fundamentals_cache (
+                    ticker     TEXT PRIMARY KEY,
+                    name       TEXT,
+                    industry   TEXT,
+                    pe         TEXT,
+                    f_pe       TEXT,
+                    cap        TEXT,
+                    growth     TEXT,
+                    news       TEXT,
+                    fetched_at REAL NOT NULL
+                )
+            """)
+            conn.execute("PRAGMA journal_mode=WAL")
+
+    def get(self, ticker: str) -> Optional[dict]:
+        """Returns fresh cached fundamentals or None if stale/missing."""
+        cutoff = time.time() - self.ttl_seconds
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT name, industry, pe, f_pe, cap, growth, news, fetched_at "
+                "FROM fundamentals_cache WHERE ticker = ? AND fetched_at >= ?",
+                (ticker.upper(), cutoff),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "name":   row[0],
+            "industry": row[1],
+            "pe":     row[2],
+            "f_pe":   row[3],
+            "cap":    row[4],
+            "growth": row[5],
+            "news":   row[6],
+            "_fetched_at": row[7],
+        }
+
+    def store(self, ticker: str, data: dict) -> None:
+        with self._lock:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO fundamentals_cache "
+                    "(ticker, name, industry, pe, f_pe, cap, growth, news, fetched_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?)",
+                    (
+                        ticker.upper(),
+                        str(data.get("name", "")),
+                        str(data.get("industry", "N/A")),
+                        str(data.get("pe", "N/A")),
+                        str(data.get("f_pe", "N/A")),
+                        str(data.get("cap", "N/A")),
+                        str(data.get("growth", "N/A")),
+                        str(data.get("news", "")),
+                        time.time(),
+                    ),
+                )
+
+
+# ---------------------------------------------------------------------------
+# SQLite AI Score Cache (Phase 1 of ARCHITECTURE.md rebuild)
+# ---------------------------------------------------------------------------
+
+class AIScoreCache:
+    """
+    Persistent Gemma analysis cache. Stored after every LLM run so the live
+    agent can use overnight-computed AI scores without re-running inference.
+    Invalidated by TTL or explicit news-shock event (Phase 4).
+    """
+
+    def __init__(self, db_path: str = DB_PATH, ttl_hours: int = 24):
+        self.db_path = db_path
+        self.ttl_seconds = ttl_hours * 3600
+        self._lock = threading.Lock()
+        self._init_table()
+
+    def _init_table(self):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS ai_scores_cache (
+                    ticker             TEXT PRIMARY KEY,
+                    score              INTEGER,
+                    rating             TEXT,
+                    reasoning          TEXT,
+                    bull_case          TEXT,
+                    bear_case          TEXT,
+                    key_risk           TEXT,
+                    considerations_json TEXT,
+                    generated_at       REAL NOT NULL
+                )
+            """)
+            conn.execute("PRAGMA journal_mode=WAL")
+
+    def get(self, ticker: str) -> Optional[dict]:
+        """Returns fresh cached AI score dict or None if stale/missing."""
+        import json as _json
+        cutoff = time.time() - self.ttl_seconds
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT score, rating, reasoning, bull_case, bear_case, key_risk, "
+                "considerations_json, generated_at "
+                "FROM ai_scores_cache WHERE ticker = ? AND generated_at >= ?",
+                (ticker.upper(), cutoff),
+            ).fetchone()
+        if not row:
+            return None
+        considerations = []
+        try:
+            considerations = _json.loads(row[6]) if row[6] else []
+        except Exception:
+            pass
+        return {
+            "score":          int(row[0]) if row[0] is not None else 50,
+            "rating":         row[1] or "HOLD",
+            "reasoning":      row[2] or "",
+            "bull_case":      row[3] or "",
+            "bear_case":      row[4] or "",
+            "key_risk":       row[5] or "",
+            "considerations": considerations,
+            "_generated_at":  row[7],
+        }
+
+    def store(self, ticker: str, data: dict) -> None:
+        import json as _json
+        cons = data.get("considerations", []) or []
+        try:
+            cons_json = _json.dumps(cons)
+        except Exception:
+            cons_json = "[]"
+        with self._lock:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO ai_scores_cache "
+                    "(ticker, score, rating, reasoning, bull_case, bear_case, key_risk, "
+                    "considerations_json, generated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                    (
+                        ticker.upper(),
+                        int(data.get("score", 50)),
+                        str(data.get("rating", "HOLD")).upper(),
+                        str(data.get("reasoning", ""))[:4000],
+                        str(data.get("bull_case", ""))[:2000],
+                        str(data.get("bear_case", ""))[:2000],
+                        str(data.get("key_risk", ""))[:2000],
+                        cons_json,
+                        time.time(),
+                    ),
+                )
+
+    def invalidate(self, ticker: str) -> None:
+        """Force-expire the cache for a ticker. Used on news shock (Phase 4)."""
+        with self._lock:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    "DELETE FROM ai_scores_cache WHERE ticker = ?",
+                    (ticker.upper(),),
+                )
+
+
+# ---------------------------------------------------------------------------
+# Watchlist Today (Phase 2 of ARCHITECTURE.md rebuild)
+# ---------------------------------------------------------------------------
+
+class WatchlistToday:
+    """
+    Output of the overnight research cycle — the ranked short-list the live
+    reactive agent (Phase 3) will subscribe to and react against.
+    Rebuilt every research run; previous day's rows are cleared.
+    """
+
+    def __init__(self, db_path: str = DB_PATH):
+        self.db_path = db_path
+        self._lock = threading.Lock()
+        self._init_table()
+
+    def _init_table(self):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS watchlist_today (
+                    ticker                TEXT PRIMARY KEY,
+                    rank                  INTEGER NOT NULL,
+                    ai_score              INTEGER,
+                    quant_score           INTEGER,
+                    recommendation        TEXT,
+                    price                 REAL,
+                    change_pct            REAL,
+                    technicals_summary    TEXT,
+                    fundamentals_summary  TEXT,
+                    generated_at          REAL NOT NULL
+                )
+            """)
+            conn.execute("PRAGMA journal_mode=WAL")
+
+    def replace_all(self, rows: list) -> int:
+        """
+        Atomically replace yesterday's watchlist with today's.
+        `rows` is a list of dicts produced by the research cycle.
+        Returns the number of rows written.
+        """
+        if not rows:
+            return 0
+        now = time.time()
+        with self._lock:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute("DELETE FROM watchlist_today")
+                conn.executemany(
+                    "INSERT INTO watchlist_today "
+                    "(ticker, rank, ai_score, quant_score, recommendation, price, "
+                    "change_pct, technicals_summary, fundamentals_summary, generated_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    [
+                        (
+                            r["ticker"].upper(),
+                            int(r["rank"]),
+                            int(r.get("ai_score") or 0) if r.get("ai_score") is not None else None,
+                            int(r.get("quant_score") or 0) if r.get("quant_score") is not None else None,
+                            str(r.get("recommendation", "HOLD")).upper(),
+                            float(r.get("price") or 0),
+                            float(r.get("change_pct") or 0),
+                            str(r.get("technicals_summary", ""))[:500],
+                            str(r.get("fundamentals_summary", ""))[:500],
+                            now,
+                        )
+                        for r in rows
+                    ],
+                )
+        return len(rows)
+
+    def get_all(self) -> list:
+        """Returns today's watchlist sorted by rank ASC. Returns [] if empty."""
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT ticker, rank, ai_score, quant_score, recommendation, price, "
+                "change_pct, technicals_summary, fundamentals_summary, generated_at "
+                "FROM watchlist_today ORDER BY rank ASC"
+            ).fetchall()
+        return [
+            {
+                "ticker":               r[0],
+                "rank":                 r[1],
+                "ai_score":             r[2],
+                "quant_score":          r[3],
+                "recommendation":       r[4],
+                "price":                r[5],
+                "change_pct":           r[6],
+                "technicals_summary":   r[7],
+                "fundamentals_summary": r[8],
+                "generated_at":         r[9],
+            }
+            for r in rows
+        ]
+
+    def get_tickers(self) -> list:
+        """Returns just the list of ticker symbols on today's watchlist."""
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT ticker FROM watchlist_today ORDER BY rank ASC"
+            ).fetchall()
+        return [r[0] for r in rows]
+
+
 # Module-level singletons
-rate_limiter    = PolygonRateLimiter()
-news_cache      = AppCache(ttl_seconds=7200)   # 2 hours
-funds_cache     = AppCache(ttl_seconds=14400)  # 4 hours
-history_cache   = HistoryCache(db_path=DB_PATH)
+rate_limiter      = PolygonRateLimiter()
+news_cache        = AppCache(ttl_seconds=7200)   # 2 hours (L1 in-memory)
+funds_cache       = AppCache(ttl_seconds=14400)  # 4 hours (L1 in-memory)
+history_cache     = HistoryCache(db_path=DB_PATH)
+fundamentals_cache = FundamentalsCache(db_path=DB_PATH, ttl_hours=24)  # L2 persistent
+ai_score_cache    = AIScoreCache(db_path=DB_PATH, ttl_hours=24)        # L2 persistent
+watchlist_today    = WatchlistToday(db_path=DB_PATH)                   # Phase 2 output
 
 
 # ---------------------------------------------------------------------------
@@ -306,7 +587,9 @@ def get_full_history(ticker: str, logger=None) -> list:
         bars = _fetch_bars_from_polygon(ticker, start_date, end_date, logger)
         if bars:
             history_cache.store(ticker, bars)
-        return bars
+        # Return from cache so timestamps are normalized to ISO date strings
+        # (Polygon returns `t` as int milliseconds; downstream code expects strings).
+        return history_cache.get(ticker, allow_stale=True) or []
 
 
 # ---------------------------------------------------------------------------
@@ -319,10 +602,24 @@ def get_full_history(ticker: str, logger=None) -> list:
     retry=retry_if_exception_type(Exception)
 )
 def get_fundamentals(ticker: str, logger=None) -> dict:
-    """Fetches fundamental data via yfinance with Polygon news fallback."""
+    """
+    Fetches fundamental data via yfinance with Polygon news fallback.
+    Three-tier cache: L1 in-memory (4h) → L2 SQLite (24h) → L3 yfinance fetch.
+    """
+    # L1: hot in-memory cache
     cached = funds_cache.get(ticker)
     if cached:
         return cached
+
+    # L2: persistent SQLite cache (survives restarts)
+    persisted = fundamentals_cache.get(ticker)
+    if persisted:
+        # Strip internal field before returning + hydrate L1
+        persisted.pop("_fetched_at", None)
+        funds_cache.set(ticker, persisted)
+        if logger:
+            logger.log(f"📦 Fundamentals L2 HIT [{ticker}] from SQLite")
+        return persisted
 
     try:
         stock = yf.Ticker(ticker)
@@ -354,7 +651,13 @@ def get_fundamentals(ticker: str, logger=None) -> dict:
             "growth":   rev_growth,
             "news":     news_summary if news_summary.strip() else "No recent news found.",
         }
+        # Write through both cache layers
         funds_cache.set(ticker, data)
+        try:
+            fundamentals_cache.store(ticker, data)
+        except Exception as e:
+            if logger:
+                logger.log(f"⚠️ Fundamentals L2 write failed [{ticker}]: {e}", level="WARNING")
         if logger:
             logger.log(f"📊 Fundamentals [{ticker}]: P/E={pe_ratio}, Growth={rev_growth}")
         return data

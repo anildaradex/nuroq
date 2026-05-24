@@ -38,5 +38,21 @@
             "score": 50,
             "reasoning": "RSI is overbought, suggesting potential exhaustion. Trend is up, but recent volatility is high. Trend is UP"
         }
+    ],
+    "VG": [
+        {
+            "timestamp": "2026-05-23 19:37:38",
+            "rating": "BUY",
+            "score": 68,
+            "reasoning": "The stock exhibits a strong upward trend on both daily and weekly charts, supported by positive momentum indicators. Fundamentals show moderate growth, and the company's risk profile appears low. Howe..."
+        }
+    ],
+    "NVDA": [
+        {
+            "timestamp": "2026-05-23 20:34:05",
+            "rating": "BUY",
+            "score": 68,
+            "reasoning": "NVDA exhibits a strong upward trend on both daily and weekly charts, supported by positive momentum indicators. The forward P/E ratio suggests potential for future earnings growth, and social sentimen..."
+        }
     ]
 }
