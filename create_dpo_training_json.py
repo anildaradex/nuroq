@@ -29,21 +29,33 @@ DB_PATH = os.getenv("NUROQ_DB_PATH", "nuroq.db")
 # Prompt builder — MUST match dashboard.py analyze_single_ticker_data
 # ---------------------------------------------------------------------------
 
-def build_prompt(ticker: str, techs: dict, pe="N/A", growth="N/A", news="N/A", mem_ctx="N/A") -> str:
+def build_prompt(ticker: str, techs: dict, pe="N/A", growth="N/A",
+                 news="N/A", mem_ctx="N/A", company_name=None, industry="N/A") -> str:
+    """
+    MUST mirror the inference prompt at dashboard.py:analyze_single_ticker_data.
+    The anti-drift fix (2026-05-24) front-loads the ticker + company name so
+    Gemma 4B doesn't confuse less-prominent symbols (e.g., SONY → GameStop).
+    """
+    name = company_name or ticker.upper()
     return (
-        "### Instruction: Act as a Hedge Fund Analyst. Analyze using Technicals and Fundamentals.\n"
-        f"    1. Technicals: {techs['trend']} Trend, RSI Flag: {techs.get('semantic_rsi', 'NEUTRAL')}, "
+        "### Instruction: Act as a Hedge Fund Analyst.\n\n"
+        f"    ANALYSIS TARGET: {ticker.upper()} — {name} ({industry})\n\n"
+        f"    Analyze {ticker.upper()} ({name}) using Technicals and Fundamentals.\n"
+        f"    All reasoning MUST reference {ticker.upper()} or {name} explicitly.\n"
+        f"    Do not analyze any other company.\n\n"
+        f"    1. Technicals for {ticker.upper()}: {techs['trend']} Trend, "
+        f"RSI Flag: {techs.get('semantic_rsi', 'NEUTRAL')}, "
         f"Bollinger Flag: {techs.get('semantic_bb', 'NEUTRAL')}\n"
-        f"    2. Fundamentals: PE Ratio {pe}, Rev Growth {growth}.\n"
-        f"    3. Context: {news}\n"
-        f"    4. Memory: {mem_ctx}\n\n"
+        f"    2. Fundamentals for {ticker.upper()}: PE Ratio {pe}, Rev Growth {growth}.\n"
+        f"    3. Context for {ticker.upper()}: {news}\n"
+        f"    4. Memory (past decisions on {ticker.upper()}): {mem_ctx}\n\n"
         "    Provide your analysis as a CONCISE JSON object with the following fields:\n"
-        '    - "reasoning": "A concise explanation of your findings"\n'
-        '    - "considerations": ["Factor 1", "Factor 2", "Factor 3"]\n'
+        f'    - "reasoning": "A concise explanation of {ticker.upper()}\'s setup"\n'
+        f'    - "considerations": ["Factor 1 specific to {ticker.upper()}", "Factor 2", "Factor 3"]\n'
         '    - "rating": "BUY/SELL/HOLD"\n'
         '    - "score": 0-100 (Conviction score)\n\n'
         "    Ensure the response is valid JSON only. Do not repeat the output."
-        f" ### Input: Ticker: {ticker}, Close: ${techs['price']} ### Response:"
+        f" ### Input: Ticker: {ticker.upper()} ({name}), Close: ${techs['price']} ### Response:"
     )
 
 

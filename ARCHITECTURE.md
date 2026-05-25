@@ -4,8 +4,8 @@
 > user-facing functionality; `SCHEDULING.md` for how to schedule the overnight
 > cycle; this doc describes where we're going.
 >
-> **Last updated:** 2026-05-23 (Phase 3a ships)
-> **Status:** Phases 1, 2, 3a complete · Phase 3b (robustness) + Phase 4 (news) next
+> **Last updated:** 2026-05-24 (Phases 2.5, 3b, 4b, 5 ship — rebuild complete · regression suite at 82 tests)
+> **Status:** All planned phases complete. Future work tracked under Open follow-ups in CAPABILITIES.md.
 
 ---
 
@@ -152,48 +152,93 @@ agent changes (Phase 3).
 - Agent tab UI now shows live status: subscribed/held counts, bars processed,
   BUYs fired/cap, SELLs fired, suppressed (cap), started_at, last bar time
 
-### Phase 3b — Live agent robustness (next)
+### Phase 3b — Live agent robustness ✅ DONE
 
-Out of scope for Phase 3a, queued as follow-ups:
-- WebSocket reconnect on disconnect (current alpaca-py `_run_forever` use is fragile)
-- Stale-bar detection (alert if no bars received for N minutes)
-- Hysteresis on crossings (require N consecutive bars before firing)
-- Per-ticker cooldown after firing
-- News final-check (deferred to Phase 4)
-
----
-
-### Phase 4 — News reactivity
-
-**Goal:** Detect breaking news per ticker and refresh AI scores accordingly.
-
-**Deliverables:**
-- Periodic news poller (every 15 min during market hours for watchlist tickers)
-- New SQLite table `news_cache` (ticker, headline, body, source, published_at)
-- Shock detector: regex on title for `{earnings, downgrade, FDA, halt, M&A,
-  guidance, recall, lawsuit}`
-- On shock: enqueue LLM re-score for that ticker; bump priority in watchlist
-- Single-worker LLM queue so re-scores don't contend for the GPU
-
-**Open question:** News source. Options:
-- Polygon news REST (free tier limits to 5 req/min — too low for 500 tickers
-  every 15 min = 2,000 calls/hr)
-- Alpaca news WebSocket (free tier has limited symbol universe)
-- Polygon paid tier ($30/mo, unlimited)
-- RSS feeds from Yahoo Finance / SeekingAlpha / etc. (free but messy)
+- WebSocket reconnect loop in `MarketStreamer._run_stream`: catches exceptions
+  from `_run_forever`, sleeps with exponential backoff (5s → 120s capped), retries
+  up to `max_reconnect_attempts` (default 8). On exhaustion, marks streamer stopped.
+- Stale-bar detection via `MarketStreamer.check_staleness()`: tracks
+  `last_bar_received_at` per bar; returns a report dict if age > 5 min while
+  running, optionally fires a `stale_alert_callback` once per staleness episode.
+  Auto-resets when bars resume.
+- Hysteresis (`hysteresis_bars`, default 2): crossing must persist for N
+  consecutive bars before firing. New `TickerState.bars_above_buy /
+  bars_below_sell` counters track this.
+- Per-ticker cooldown (`per_ticker_cooldown_s`, default 30 min): after a fire,
+  same-ticker crossings within the window are blocked at `_cooldown_ok` check.
 
 ---
 
-### Phase 5 — Operational polish
+### Phase 4a — News reactivity (final-check gating) ✅ DONE
 
-**Goal:** Make the system observable and resilient.
+- `news_engine.py` — three components: `NewsClassifier` (pure-function keyword
+  classifier, 4 buckets: POSITIVE_BOOST / NEUTRAL / NEGATIVE_WARNING /
+  NEGATIVE_BLOCK), `NewsPoller` (background thread, polls top-N watchlist +
+  held positions every 30 min, writes new headlines + classifications to
+  news_cache), `check_news_for_crossing(ticker)` (hot-path safe helper for
+  LiveAgent — single SELECT, no API call)
+- `news_cache` SQLite table — (ticker, headline, source, classification,
+  published_at, ingested_at) with PRIMARY KEY (ticker, headline) so
+  `INSERT OR IGNORE` de-dupes naturally
+- `LiveAgent._handle_buy_crossing` now calls `check_news_for_crossing` before
+  firing: NEGATIVE_BLOCK suppresses + logs `SUPPRESSED_NEWS`; WARNING/BOOST
+  decorate the reasoning string with a tag; NEUTRAL/no-news fires normally
+- News poller gated by `NUROQ_BACKGROUND_SERVICES` so cron jobs don't double-poll
+- Budget: 35 tickers × every 30 min = 70 Polygon calls/hr (well under 300/hr free-tier limit)
+- Test coverage: 4 classifier buckets, news_cache round-trip + dedup + TTL,
+  LiveAgent suppress/decorate paths
 
-**Deliverables:**
-- Unified scheduler (APScheduler) tracking all three tier statuses
-- Dashboard panel showing: last research run timestamp, watchlist size, last
-  live trigger, LLM queue depth, cache freshness per ticker
-- Health checks: research cycle failed alert, cache stale alert
-- Optional: cron failure email/Telegram
+### Phase 4b — News-driven LLM re-score ✅ DONE
+
+- `llm_queue.py` — new `LLMRescoreQueue` class. Single worker thread,
+  per-ticker dedup (via a `_pending` set), idle gap between re-runs to avoid
+  GPU pinning. Tracks queue depth + processed count + dedup drops + errors
+  via `.status()`.
+- `NewsPoller` extended with `on_shock_callback(ticker, verdict)` constructor
+  param. Fires once per newly-stored non-NEUTRAL headline.
+- `dashboard.py` wires the callback to: `ai_score_cache.invalidate(ticker)` +
+  `llm_rescore_queue.enqueue(ticker, reason)` for `NEGATIVE_BLOCK` and
+  `NEGATIVE_WARNING`. `POSITIVE_BOOST` decorates approvals but doesn't trigger
+  a re-score (cached score already optimistic).
+- Worker calls `analyze_single_ticker_data` which writes the fresh score
+  through to `ai_scores_cache` (Phase 1 wiring).
+
+### Phase 4c — Future (Alpaca news WebSocket, LLM sentiment, etc.)
+
+Out of scope. Tracked under CAPABILITIES.md follow-ups.
+
+---
+
+### Phase 5 — Operational polish ✅ DONE (scope: observability)
+
+- New `🩺 Health` Gradio tab via `render_health_snapshot()`. Markdown table
+  with traffic-light indicators per component:
+  - Research cycle: last-run timestamp + age + candidate count
+  - LiveAgent: subscribed/held counts, bars processed, BUYs fired/cap, last bar
+  - NewsPoller: cycles completed, headlines ingested, last cycle age
+  - LLM Rescore Queue: depth, processed, dedup drops, errors
+  - Alpaca: connection status + equity + buying power
+  - SQLite caches: row counts for price_history / fundamentals_cache /
+    ai_scores_cache / news_cache / live_triggers / all_signals
+- 🔄 Refresh Health button refreshes the snapshot on demand.
+
+### Phase 2.5 — Pre-market refresh ✅ DONE
+
+- `premarket_refresh.py` standalone CLI. Sets `NUROQ_BACKGROUND_SERVICES=0`
+  before importing dashboard (same pattern as `research_cycle.py`).
+- Reads `watchlist_today`, pulls fresh Polygon snapshot, updates `price` and
+  `change_pct` columns in-place for each watchlist ticker.
+- Pulls news for watchlist tickers from Polygon (last 16h), classifies via
+  `NewsClassifier`, writes to `news_cache`.
+- Flags: `--no-telegram`, `--dry-run`, `--news-only`, `--price-only`.
+- Designed for 09:15 ET launchd / cron entry (see SCHEDULING.md).
+
+### NOT YET DONE (deferred)
+
+- APScheduler unification (cron is fine for now)
+- AlpacaNewsStream WebSocket as alternative to polling
+- LLM-based sentiment as augmentation for keyword classifier
+- Per-watchlist-row LiveAgent status (current panel is aggregate only)
 
 ---
 

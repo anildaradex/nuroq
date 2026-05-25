@@ -45,6 +45,12 @@
             "rating": "BUY",
             "score": 68,
             "reasoning": "The stock exhibits a strong upward trend on both daily and weekly charts, supported by positive momentum indicators. Fundamentals show moderate growth, and the company's risk profile appears low. Howe..."
+        },
+        {
+            "timestamp": "2026-05-24 09:43:12",
+            "rating": "BUY",
+            "score": 70,
+            "reasoning": "VG's recent price action has been strong, exhibiting a clear upward trend on both daily and weekly charts, supported by a solid momentum indicator. The fundamentals show moderate revenue growth, and t..."
         }
     ],
     "NVDA": [
@@ -53,6 +59,14 @@
             "rating": "BUY",
             "score": 68,
             "reasoning": "NVDA exhibits a strong upward trend on both daily and weekly charts, supported by positive momentum indicators. The forward P/E ratio suggests potential for future earnings growth, and social sentimen..."
+        }
+    ],
+    "MSFT": [
+        {
+            "timestamp": "2026-05-24 00:17:04",
+            "rating": "BUY",
+            "score": 65,
+            "reasoning": "MSFT exhibits a strong upward trend on both daily and weekly charts, supported by positive momentum indicators. Fundamentals are solid, with reasonable valuation metrics and steady revenue growth. Whi..."
         }
     ]
 }

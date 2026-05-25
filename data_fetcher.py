@@ -449,6 +449,20 @@ class WatchlistToday:
             ).fetchall()
         return [r[0] for r in rows]
 
+    def get_metadata(self) -> dict:
+        """
+        Returns {count, generated_at} for the current watchlist. Used by the
+        UI to show 'Last research cycle: <timestamp> · N candidates'.
+        Returns {count: 0, generated_at: None} if empty.
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT COUNT(*), MAX(generated_at) FROM watchlist_today"
+            ).fetchone()
+        count = int(row[0]) if row and row[0] else 0
+        generated_at = float(row[1]) if row and row[1] else None
+        return {"count": count, "generated_at": generated_at}
+
 
 # ---------------------------------------------------------------------------
 # Live Triggers Log (Phase 3 of ARCHITECTURE.md rebuild)
@@ -532,6 +546,104 @@ class LiveTriggers:
         return int(row[0]) if row else 0
 
 
+# ---------------------------------------------------------------------------
+# News Cache (Phase 4 of ARCHITECTURE.md rebuild)
+# ---------------------------------------------------------------------------
+
+class NewsCache:
+    """
+    Persistent ticker-keyed news + classification cache. Written by the
+    background NewsPoller; read at trigger-time by the live agent's
+    news-final-check before firing approvals.
+
+    Each ticker stores its most-recent classification + headline so the live
+    agent's hot path is a single-row SELECT (<5ms).
+    """
+
+    def __init__(self, db_path: str = DB_PATH, ttl_hours: int = 6):
+        self.db_path = db_path
+        self.ttl_seconds = ttl_hours * 3600
+        self._lock = threading.Lock()
+        self._init_table()
+
+    def _init_table(self):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS news_cache (
+                    ticker          TEXT NOT NULL,
+                    headline        TEXT NOT NULL,
+                    source          TEXT,
+                    classification  TEXT NOT NULL,
+                    published_at    TEXT,
+                    ingested_at     REAL NOT NULL,
+                    PRIMARY KEY (ticker, headline)
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_news_ticker_ingested "
+                         "ON news_cache(ticker, ingested_at DESC)")
+            conn.execute("PRAGMA journal_mode=WAL")
+
+    def store(self, ticker: str, headline: str, classification: str,
+              source: str = "polygon", published_at: Optional[str] = None) -> bool:
+        """
+        Inserts a news row. Returns True if it was a new row, False if it was
+        already present (de-dup by (ticker, headline)).
+        """
+        with self._lock:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(
+                    "INSERT OR IGNORE INTO news_cache "
+                    "(ticker, headline, source, classification, published_at, ingested_at) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (ticker.upper(), headline[:500], source,
+                     classification.upper(), published_at, time.time()),
+                )
+                return cursor.rowcount > 0
+
+    def get_latest_classification(self, ticker: str) -> Optional[dict]:
+        """
+        Returns the most-recently-ingested news classification for ticker, if
+        within TTL. Used by the live agent's news-final-check. Returns None on
+        miss or if the latest news is stale.
+        """
+        cutoff = time.time() - self.ttl_seconds
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT headline, source, classification, published_at, ingested_at "
+                "FROM news_cache "
+                "WHERE ticker = ? AND ingested_at >= ? "
+                "ORDER BY ingested_at DESC LIMIT 1",
+                (ticker.upper(), cutoff),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "headline":       row[0],
+            "source":         row[1],
+            "classification": row[2],
+            "published_at":   row[3],
+            "ingested_at":    row[4],
+        }
+
+    def get_recent_for_ticker(self, ticker: str, limit: int = 5) -> list:
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT headline, classification, ingested_at FROM news_cache "
+                "WHERE ticker = ? ORDER BY ingested_at DESC LIMIT ?",
+                (ticker.upper(), limit),
+            ).fetchall()
+        return [{"headline": r[0], "classification": r[1], "ingested_at": r[2]} for r in rows]
+
+    def count_today(self) -> int:
+        start_of_day = time.time() - (time.time() % 86400)
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM news_cache WHERE ingested_at >= ?",
+                (start_of_day,),
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+
 # Module-level singletons
 rate_limiter      = PolygonRateLimiter()
 news_cache        = AppCache(ttl_seconds=7200)   # 2 hours (L1 in-memory)
@@ -541,6 +653,7 @@ fundamentals_cache = FundamentalsCache(db_path=DB_PATH, ttl_hours=24)  # L2 pers
 ai_score_cache    = AIScoreCache(db_path=DB_PATH, ttl_hours=24)        # L2 persistent
 watchlist_today    = WatchlistToday(db_path=DB_PATH)                   # Phase 2 output
 live_triggers      = LiveTriggers(db_path=DB_PATH)                     # Phase 3 crossing log
+news_cache_v2      = NewsCache(db_path=DB_PATH, ttl_hours=6)           # Phase 4 news + classification
 
 
 # ---------------------------------------------------------------------------
