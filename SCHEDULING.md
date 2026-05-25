@@ -209,15 +209,56 @@ formula during market hours.
 
 ---
 
-## Future evolution
+## Pre-market refresh (Phase 2.5 — 09:15 ET)
 
-This is Phase 2 of the rebuild documented in `ARCHITECTURE.md`. Phase 3 will
-add the live reactive agent that consumes the `watchlist_today` produced here.
-Once both ship, the daily flow is:
+A lighter cron entry that runs `premarket_refresh.py` to update watchlist
+prices + ingest overnight news before market open.
 
-1. 02:00 ET — cron triggers `research_cycle.py` (this guide)
-2. 02:00–02:30 ET — caches refreshed, watchlist written
-3. 09:15 ET — (Phase 2.5, not built yet) pre-market refresh updates prices
-4. 09:30 ET — live reactive agent (Phase 3) subscribes to watchlist via WebSocket
-5. 09:30–16:00 ET — agent reacts to live bars, fires Telegram approvals on threshold crossings
-6. 16:00 ET — (Phase 5) end-of-day summary Telegram digest
+**macOS launchd** — add a second `.plist` at
+`~/Library/LaunchAgents/com.nuroq.premarket-refresh.plist` mirroring the
+overnight one but with:
+
+- `ProgramArguments`: `premarket_refresh.py` instead of `research_cycle.py`
+- `StartCalendarInterval`: weekdays at `Hour 9, Minute 15`
+- Distinct stdout/stderr log paths
+
+**Linux cron**:
+
+```
+# NuroQ premarket refresh — weekdays 09:15 ET
+15 9 * * 1-5 cd /path/to/stock-ai-startup && ./.venv/bin/python premarket_refresh.py >> premarket_refresh.log 2>&1
+```
+
+**What it does**: reads `watchlist_today`, pulls Polygon snapshot for those
+~150 tickers, updates `price` and `change_pct` columns in-place, then fetches
+fresh news (last ~16h) for the same tickers and writes classified headlines
+to `news_cache`. No LLM, runs in ~3-5 min.
+
+`premarket_refresh.py --news-only` skips price refresh.
+`premarket_refresh.py --price-only` skips news refresh.
+
+---
+
+## Complete daily flow (after all rebuild phases ship)
+
+The actual production timeline once you have both crons + the dashboard
+running during the day:
+
+1. **02:00 ET — `research_cycle.py` (cron)** → caches refreshed, ~150-ticker
+   ranked watchlist written to `watchlist_today`
+2. **02:00–02:30 ET** — Gemma analyses persisted to `ai_scores_cache`,
+   `fundamentals_cache`, `live_triggers` schemas ready
+3. **09:15 ET — `premarket_refresh.py` (cron)** → watchlist prices refreshed,
+   overnight news classified into `news_cache`
+4. **09:25 ET** — open the dashboard (or have it already running); click
+   ▶️ START AGENT in the Agent tab
+5. **09:30 ET — market opens** → LiveAgent subscribes to watchlist tickers
+   via Alpaca WebSocket
+6. **09:30–16:00 ET** — LiveAgent reacts to live bars:
+   - Re-scores per bar using cached fundamentals + cached AI score
+   - Detects threshold crossings (with hysteresis + per-ticker cooldown)
+   - On BUY crossing: news final-check; Telegram approval (subject to daily cap)
+   - On SELL crossing (held only): close position at broker
+   - NewsPoller every 30 min refreshes news, fires shock callbacks that
+     invalidate cached AI scores and queue re-runs in LLMRescoreQueue
+7. **16:00 ET — market closes** → LiveAgent idles; cron handles tomorrow

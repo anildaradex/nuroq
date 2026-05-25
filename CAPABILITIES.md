@@ -1,7 +1,7 @@
 # NuroQ — Capabilities & Architecture
 
 > Living reference for what this tool does, how it's wired, and where its limits are.
-> **Last updated:** 2026-05-24 (Phase 4a ships: news engine — NewsPoller + NewsClassifier + live-agent final-check gates BUY approvals on breaking news. Master test suite expanded to 61 tests, all passing.)
+> **Last updated:** 2026-05-24 (Rebuild complete: Phases 1, 2, 2.5, 3a, 3b, 4a, 4b, 5 all done. Reactive engine with reconnect + hysteresis + cooldown + news-shock LLM rescore queue + pre-market refresh + Health observability tab + Watchlist tab with BUY/HOLD grouping. Master test suite at 82 tests, all passing.)
 >
 > **For where this is going:** see `ARCHITECTURE.md` for the multi-phase rebuild plan (3-tier system: overnight research → premarket refresh → live reactive agent). See `SCHEDULING.md` for cron / launchd setup.
 >

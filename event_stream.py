@@ -5,6 +5,7 @@ import asyncio
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from typing import Optional
 from dotenv import load_dotenv
 from collections import deque
 from alpaca.data.live import StockDataStream
@@ -28,7 +29,9 @@ class MarketStreamer:
     """
 
     def __init__(self, trigger_callback, debounce_seconds: int = 300,
-                 max_callback_workers: int = 2, bar_callback=None):
+                 max_callback_workers: int = 2, bar_callback=None,
+                 max_reconnect_attempts: int = 8,
+                 stale_bar_alert_seconds: int = 300):
         # trigger_callback fires on NOTABLE events (breakout, volatility spike)
         # with per-ticker debounce + thread pool dispatch. Used by ad-hoc
         # LLM-driven analysis.
@@ -50,6 +53,13 @@ class MarketStreamer:
             max_workers=max_callback_workers,
             thread_name_prefix="streamer-cb",
         )
+        # Phase 3b: reconnect + staleness tracking
+        self.max_reconnect_attempts = max_reconnect_attempts
+        self.stale_bar_alert_seconds = stale_bar_alert_seconds
+        self.last_bar_received_at: float = 0.0      # epoch seconds, 0 = never
+        self.reconnect_count: int = 0
+        self._stale_alert_fired: bool = False
+        self.stale_alert_callback = None            # optional: dashboard wires this
 
     def set_watchlist(self, tickers):
         """Updates the list of tickers to monitor."""
@@ -90,17 +100,43 @@ class MarketStreamer:
         self.thread.start()
 
     def _run_stream(self):
+        """
+        Drives the WebSocket consumer. Phase 3b adds bounded reconnect:
+        on connection error, sleep with exponential backoff and re-create
+        the stream up to max_reconnect_attempts times.
+        """
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
-        
-        self.stream = StockDataStream(ALPACA_API_KEY, ALPACA_SECRET_KEY)
-        
-        async def subscribe():
-            if self.watchlist:
-                await self.stream.subscribe_bars(self._handle_bar, *self.watchlist)
-            await self.stream._run_forever()
 
-        self.loop.run_until_complete(subscribe())
+        backoff = 5
+        while self.is_running and self.reconnect_count <= self.max_reconnect_attempts:
+            try:
+                self.stream = StockDataStream(ALPACA_API_KEY, ALPACA_SECRET_KEY)
+                _log.info("WebSocket connecting (attempt %d/%d)",
+                          self.reconnect_count + 1, self.max_reconnect_attempts + 1)
+
+                async def subscribe():
+                    self.stream.subscribe_bars(self._handle_bar, *self.watchlist) \
+                        if self.watchlist else None
+                    await self.stream._run_forever()
+
+                self.loop.run_until_complete(subscribe())
+                # Clean exit from _run_forever — typically only on shutdown.
+                if not self.is_running:
+                    return
+                _log.warning("WebSocket loop exited cleanly while still running — reconnecting.")
+            except Exception as e:
+                _log.warning("WebSocket error: %s — backoff %ds then reconnect", e, backoff)
+
+            if not self.is_running:
+                return
+            self.reconnect_count += 1
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 120)
+
+        _log.error("WebSocket reconnect exhausted (%d attempts). Streamer stopped.",
+                   self.reconnect_count)
+        self.is_running = False
 
     def _maybe_fire(self, ticker: str, reason: str) -> None:
         """
@@ -126,6 +162,11 @@ class MarketStreamer:
         """Processes incoming 1-minute bar data. Must not block the asyncio loop."""
         ticker = bar.symbol
         price = bar.close
+
+        # 0. Track liveness for stale-bar detection.
+        self.last_bar_received_at = time.time()
+        if self._stale_alert_fired:
+            self._stale_alert_fired = False  # bars resumed
 
         # 1. Fire every-bar callback inline (Phase 3 live agent path).
         #    Must be fast (<100ms) — runs on the WebSocket loop.
@@ -153,6 +194,35 @@ class MarketStreamer:
     def stop(self):
         """Stops the websocket stream and shuts down the dispatch pool."""
         if self.stream:
-            asyncio.run_coroutine_threadsafe(self.stream.stop(), self.loop)
+            try:
+                asyncio.run_coroutine_threadsafe(self.stream.stop(), self.loop)
+            except Exception as e:
+                _log.warning("Streamer.stop dispatch failed: %s", e)
         self.is_running = False
         self._executor.shutdown(wait=False, cancel_futures=True)
+
+    def check_staleness(self) -> Optional[dict]:
+        """
+        Returns a dict describing staleness if no bars have arrived for
+        > stale_bar_alert_seconds AND the streamer is supposed to be running.
+        Returns None when healthy.
+        Fires the stale_alert_callback once per staleness episode.
+        """
+        if not self.is_running or self.last_bar_received_at == 0:
+            return None
+        age = time.time() - self.last_bar_received_at
+        if age <= self.stale_bar_alert_seconds:
+            return None
+        report = {
+            "ticker_count":          len(self.watchlist),
+            "seconds_since_last_bar": int(age),
+            "last_bar_at":           self.last_bar_received_at,
+            "reconnects":            self.reconnect_count,
+        }
+        if not self._stale_alert_fired and self.stale_alert_callback is not None:
+            try:
+                self.stale_alert_callback(report)
+            except Exception as e:
+                _log.warning("stale_alert_callback raised: %s", e)
+            self._stale_alert_fired = True
+        return report

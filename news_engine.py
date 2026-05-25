@@ -151,6 +151,7 @@ class NewsPoller:
         interval_seconds: int = 1800,        # 30 min default
         max_tickers_per_cycle: int = 35,
         max_headlines_per_ticker: int = 5,
+        on_shock_callback=None,              # Phase 4b: called with (ticker, verdict) on BLOCK/WARNING/BOOST
     ):
         self.get_tickers_fn = get_tickers_fn
         self.logger = logger
@@ -158,6 +159,7 @@ class NewsPoller:
         self.interval_seconds = interval_seconds
         self.max_tickers_per_cycle = max_tickers_per_cycle
         self.max_headlines_per_ticker = max_headlines_per_ticker
+        self.on_shock_callback = on_shock_callback
 
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -165,6 +167,7 @@ class NewsPoller:
         self.cycles_completed = 0
         self.last_cycle_at: Optional[float] = None
         self.headlines_ingested_total = 0
+        self.shocks_dispatched_total = 0
 
     # ─── lifecycle ────────────────────────────────────────────────────────────
 
@@ -272,6 +275,17 @@ class NewsPoller:
                     self.logger.log(
                         f"📰 NewsPoller [{ticker}] {verdict.classification}: {headline[:120]}"
                     )
+                    # Phase 4b: dispatch shock callback. Dashboard wires this to
+                    # ai_score_cache.invalidate(ticker) + llm_queue.enqueue(ticker).
+                    if self.on_shock_callback is not None:
+                        try:
+                            self.on_shock_callback(ticker, verdict)
+                            self.shocks_dispatched_total += 1
+                        except Exception as e:
+                            self.logger.log(
+                                f"⚠️ NewsPoller shock callback for {ticker} raised: {e}",
+                                level="WARNING"
+                            )
         return ingested
 
     # ─── status ────────────────────────────────────────────────────────────────

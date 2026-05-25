@@ -20,6 +20,7 @@ Off-hours behavior is governed by `is_market_hours()` + the env var
 from __future__ import annotations
 
 import os
+import time
 import threading
 from collections import deque
 from dataclasses import dataclass, field
@@ -40,6 +41,10 @@ SELL_CROSSING_THRESHOLD = 30   # score must cross DOWN through this for SELL exi
 EARNINGS_RISK_BOOST     = 10   # raise BUY threshold by this much if earnings risk
 DEFAULT_DAILY_BUY_CAP   = 5    # max BUY approvals fired per market session
 INTRADAY_BAR_HISTORY_LEN = 60  # rolling minute bars kept per ticker for volume/H/L
+
+# Phase 3b: anti-noise / anti-churn
+DEFAULT_HYSTERESIS_BARS        = 2     # score must stay above threshold for N bars
+DEFAULT_PER_TICKER_COOLDOWN_S  = 1800  # 30 min lockout per ticker after a fire
 
 # US Equities regular session in ET. Pre/after market intentionally excluded —
 # scoring is calibrated for regular-session bars.
@@ -67,18 +72,21 @@ def is_market_hours(now: Optional[datetime] = None) -> bool:
 @dataclass
 class TickerState:
     """All mutable state the live agent tracks per ticker, in-memory."""
-    ticker:           str
-    baseline_bars:    list                          # cached daily OHLCV (yesterday and earlier)
-    weekly_trend:     str                           # precomputed at watchlist load time
-    intraday_bars:    deque = field(default_factory=lambda: deque(maxlen=INTRADAY_BAR_HISTORY_LEN))
-    today_high:       Optional[float] = None
-    today_low:        Optional[float] = None
-    today_volume:     float = 0.0
-    last_price:       Optional[float] = None
-    last_score:       Optional[int] = None          # last recomputed final_score
-    last_bar_ts:      Optional[float] = None        # epoch seconds of latest bar
-    last_trigger_ts:  Optional[float] = None        # last time we fired an approval
-    is_held_position: bool = False                  # for SELL crossing eligibility
+    ticker:               str
+    baseline_bars:        list                          # cached daily OHLCV (yesterday and earlier)
+    weekly_trend:         str                           # precomputed at watchlist load time
+    intraday_bars:        deque = field(default_factory=lambda: deque(maxlen=INTRADAY_BAR_HISTORY_LEN))
+    today_high:           Optional[float] = None
+    today_low:            Optional[float] = None
+    today_volume:         float = 0.0
+    last_price:           Optional[float] = None
+    last_score:           Optional[int] = None          # last recomputed final_score
+    last_bar_ts:          Optional[float] = None        # epoch seconds of latest bar
+    last_trigger_ts:      Optional[float] = None        # last time we fired an approval
+    is_held_position:     bool = False                  # for SELL crossing eligibility
+    # Phase 3b: hysteresis counter — bars consecutively above BUY threshold
+    bars_above_buy:       int = 0
+    bars_below_sell:      int = 0
 
 
 # ─── LiveAgent ────────────────────────────────────────────────────────────────
@@ -100,6 +108,8 @@ class LiveAgent:
         fire_sell_callback: Callable[[str, float, int, str], None],
         get_held_tickers: Callable[[], List[str]],
         daily_buy_cap: int = DEFAULT_DAILY_BUY_CAP,
+        hysteresis_bars: int = DEFAULT_HYSTERESIS_BARS,
+        per_ticker_cooldown_s: int = DEFAULT_PER_TICKER_COOLDOWN_S,
     ):
         self.streamer = streamer
         self.logger = logger
@@ -107,6 +117,9 @@ class LiveAgent:
         self._fire_sell = fire_sell_callback
         self._get_held_tickers = get_held_tickers
         self.daily_buy_cap = daily_buy_cap
+        # Phase 3b: noise gates
+        self.hysteresis_bars = max(1, hysteresis_bars)
+        self.per_ticker_cooldown_s = max(0, per_ticker_cooldown_s)
 
         self.state: Dict[str, TickerState] = {}
         self.is_running = False
@@ -279,18 +292,52 @@ class LiveAgent:
     # ─── crossing detection + approval dispatch ───────────────────────────────
 
     def _check_crossings(self, state: TickerState, new_score: int) -> None:
-        """Detects crossings and fires approvals / exits subject to daily cap."""
+        """
+        Phase 3a + 3b: detects threshold crossings, applies hysteresis (require N
+        consecutive bars above threshold) and per-ticker cooldown (block
+        re-firing within N seconds), and routes to BUY/SELL handlers.
+        """
         prev = state.last_score
+        now = time.time()
 
-        # BUY crossing: prev < threshold and new >= threshold
-        if prev is not None and prev < BUY_CROSSING_THRESHOLD <= new_score:
+        # ─── BUY side: hysteresis counter + crossing fire ────────────────────
+        if new_score >= BUY_CROSSING_THRESHOLD:
+            state.bars_above_buy += 1
+        else:
+            state.bars_above_buy = 0
+
+        # Fire only when:
+        #   (1) crossing just occurred (prev below, new at/above)
+        #   (2) sustained for hysteresis_bars consecutive bars
+        #   (3) NOT in per-ticker cooldown from a prior fire
+        if (prev is not None
+            and prev < BUY_CROSSING_THRESHOLD <= new_score
+            and state.bars_above_buy >= self.hysteresis_bars
+            and self._cooldown_ok(state, now)):
             self._handle_buy_crossing(state, prev, new_score)
 
-        # SELL crossing (held positions only): prev > threshold and new <= threshold
-        elif (state.is_held_position
-              and prev is not None
-              and prev > SELL_CROSSING_THRESHOLD >= new_score):
+        # ─── SELL side: same shape, mirror logic, only for held positions ────
+        if new_score <= SELL_CROSSING_THRESHOLD:
+            state.bars_below_sell += 1
+        else:
+            state.bars_below_sell = 0
+
+        if (state.is_held_position
+            and prev is not None
+            and prev > SELL_CROSSING_THRESHOLD >= new_score
+            and state.bars_below_sell >= self.hysteresis_bars
+            and self._cooldown_ok(state, now)):
             self._handle_sell_crossing(state, prev, new_score)
+
+    def _cooldown_ok(self, state: TickerState, now: float) -> bool:
+        """True if enough time has passed since the last fire on this ticker."""
+        if not state.last_trigger_ts or self.per_ticker_cooldown_s <= 0:
+            return True
+        elapsed = now - state.last_trigger_ts
+        if elapsed < self.per_ticker_cooldown_s:
+            return False
+        return True
+
 
     def _handle_buy_crossing(self, state: TickerState, prev: int, new: int) -> None:
         ticker = state.ticker
