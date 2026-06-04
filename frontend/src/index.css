@@ -1,0 +1,131 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    font-feature-settings: "cv11", "ss01";
+    font-variant-numeric: tabular-nums;
+    /* iOS: prevent text-size jump on landscape rotate */
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    margin: 0;
+    /* Base body bumped 13 → 14px with comfortable leading for clarity
+       (Google Finance-style readability). Component classes set their own
+       sizes; this is the fallback for anything unstyled. */
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    /* iOS: remove blue tap-highlight; use our own hover/active states */
+    -webkit-tap-highlight-color: transparent;
+    /* Smooth momentum scrolling on iOS */
+    -webkit-overflow-scrolling: touch;
+    /* Allow content to extend under the notch + home indicator */
+    min-height: 100vh;
+    min-height: 100dvh;
+  }
+  /* Bigger touch targets on coarse-pointer devices (phones, tablets) */
+  @media (pointer: coarse) {
+    button, [role="button"], a {
+      min-height: 44px;
+    }
+  }
+  /* Disable pinch-zoom on the UI chrome itself — but charts can opt back in */
+  button, .pill, header, nav, footer {
+    touch-action: manipulation;
+  }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(120, 120, 130, 0.25); border-radius: 5px;
+  }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(120, 120, 130, 0.4); }
+}
+
+@layer components {
+  .pill {
+    @apply inline-flex items-center gap-1.5 rounded-md px-2 py-1
+           text-xs font-medium border;
+  }
+  .pill-ok    { @apply bg-buy/10    text-buy    border-buy/30; }
+  .pill-warn  { @apply bg-amber-500/10  text-amber-500  border-amber-500/30; }
+  .pill-err   { @apply bg-sell/10   text-sell   border-sell/30; }
+  .pill-off   { @apply bg-zinc-500/10   text-zinc-500   border-zinc-500/30; }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-md
+           px-3 py-2 text-sm font-medium border transition-colors
+           disabled:opacity-40 disabled:cursor-not-allowed
+           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60;
+  }
+  .btn-primary {
+    @apply border-accent bg-accent text-white
+           hover:bg-accent/90;
+  }
+  .btn-buy    { @apply border-buy   bg-buy   text-white hover:bg-buy/90; }
+  .btn-sell   { @apply border-sell  bg-sell  text-white hover:bg-sell/90; }
+  .btn-ghost  {
+    @apply border-zinc-300 dark:border-zinc-700 bg-transparent
+           text-zinc-700 dark:text-zinc-300
+           hover:bg-zinc-100 dark:hover:bg-zinc-800/50;
+  }
+
+  .card {
+    @apply rounded-lg border border-zinc-200 dark:border-zinc-800
+           bg-white dark:bg-zinc-900;
+  }
+  .card-tight { @apply p-3; }
+
+  .input {
+    @apply w-full rounded-md border border-zinc-300 dark:border-zinc-700
+           bg-white dark:bg-zinc-900 px-3 py-2 text-sm
+           focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent;
+  }
+
+  .kbd {
+    @apply inline-flex items-center rounded border border-zinc-300 dark:border-zinc-700
+           bg-zinc-100 dark:bg-zinc-800 px-1.5 py-0.5 text-xxs font-mono
+           text-zinc-700 dark:text-zinc-300;
+  }
+
+  /* Tables — comfortable Google-Finance-style cell breathing room. Header is
+     uppercase + muted; cells get vertical padding for legibility. Applies to
+     every .table-zebra across all views without per-component edits. */
+  .table-zebra { @apply text-sm; }
+  .table-zebra thead th {
+    @apply px-3 py-2.5 text-xxs font-semibold uppercase tracking-wide
+           text-zinc-500 dark:text-zinc-400;
+  }
+  .table-zebra tbody td {
+    @apply px-3 py-2.5 align-middle;
+  }
+  .table-zebra tbody tr:nth-child(even) {
+    @apply bg-zinc-50/50 dark:bg-zinc-900/50;
+  }
+  .table-zebra tbody tr:hover {
+    @apply bg-buy/5 cursor-pointer;
+  }
+  .table-zebra tfoot td {
+    @apply px-3 py-2.5;
+  }
+}
+
+@layer utilities {
+  .nuroq-live-dot {
+    @apply inline-block w-1.5 h-1.5 rounded-full bg-buy;
+    animation: pulse 2s ease-in-out infinite;
+  }
+
+  /* iOS safe-area helpers — apply to elements that touch screen edges */
+  .pt-safe { padding-top: max(0.5rem, env(safe-area-inset-top)); }
+  .pb-safe { padding-bottom: max(0.5rem, env(safe-area-inset-bottom)); }
+  .pl-safe { padding-left: max(0.5rem, env(safe-area-inset-left)); }
+  .pr-safe { padding-right: max(0.5rem, env(safe-area-inset-right)); }
+  .mb-safe { margin-bottom: env(safe-area-inset-bottom); }
+
+  /* Hide native scrollbar on horizontal tab strips (mobile carousel feel) */
+  .no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+  .no-scrollbar::-webkit-scrollbar { display: none; }
+}

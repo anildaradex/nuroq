@@ -68,5 +68,13 @@
             "score": 65,
             "reasoning": "MSFT exhibits a strong upward trend on both daily and weekly charts, supported by positive momentum indicators. Fundamentals are solid, with reasonable valuation metrics and steady revenue growth. Whi..."
         }
+    ],
+    "SAN": [
+        {
+            "timestamp": "2026-06-01 08:38:50",
+            "rating": "BUY",
+            "score": 68,
+            "reasoning": "SAN's current technical indicators show a strong upward trend, supported by a relatively low RSI and %B, suggesting continued momentum. Despite a modest revenue growth rate, the forward P/E is attract..."
+        }
     ]
 }

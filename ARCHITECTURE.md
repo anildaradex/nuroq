@@ -2,10 +2,61 @@
 
 > Living design doc. Updated as phases land. See `CAPABILITIES.md` for current
 > user-facing functionality; `SCHEDULING.md` for how to schedule the overnight
-> cycle; this doc describes where we're going.
+> cycle; `FRONTEND.md` for React dev; `MOBILE.md` for iOS; `HANDOFF.md` for
+> the most recent session summary.
 >
-> **Last updated:** 2026-05-24 (Phases 2.5, 3b, 4b, 5 ship — rebuild complete · regression suite at 82 tests)
-> **Status:** All planned phases complete. Future work tracked under Open follow-ups in CAPABILITIES.md.
+> **Last updated:** 2026-05-24 (evening — React + FastAPI + Capacitor iOS stack ships, regression suite at 91 tests)
+> **Status:** Original 3-tier backend rebuild complete (Phases 1, 2, 2.5, 3a, 3b, 4a, 4b, 5). Presentation layer rebuild in progress (React migration view-by-view, see below).
+
+---
+
+## Presentation tier rebuild (2026-05-24 add)
+
+The Python compute layer (scoring, live agent, event stream, news poller, LLM
+rescore queue, data fetcher, Alpaca executor) is **unchanged** — proven and
+covered by the 91-test regression suite. What's changing is the presentation
+layer:
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│              Python compute layer (unchanged)                          │
+│  scoring · live_agent · event_stream · news_engine · alpaca_executor   │
+│  · data_fetcher · llm_queue · research_cycle · master_test_suite       │
+└────────────────────────────────────────────────────────────────────────┘
+              │                                            │
+              │  import + call directly                    │  import + call directly
+   ┌──────────┴────────────┐                  ┌────────────┴─────────────┐
+   │ dashboard.py (Gradio) │                  │ backend/api.py (FastAPI) │
+   │ port 7860             │                  │ port 8000                │
+   │ in-process            │                  │ JSON over HTTP           │
+   └───────────────────────┘                  └──────┬──────────────┬────┘
+   Legacy. Phase A-D                                 │              │
+   density/nav overhaul                       ┌──────┴─────┐  ┌─────┴─────────────┐
+   shipped 2026-05-24.                        │ React SPA  │  │ iOS Capacitor app │
+                                              │ frontend/  │  │ frontend/ios/     │
+                                              └────────────┘  └───────────────────┘
+                                              Vite + React 19,    Capacitor 8,
+                                              TS, Tailwind,       wraps the same
+                                              TanStack Query,     React bundle in a
+                                              lucide, cmdk.       WKWebView shell
+                                                                  with native plugins
+                                                                  (haptics, status bar,
+                                                                  splash, push, etc.)
+```
+
+**Why two frontends in parallel:** the Gradio dashboard works end-to-end today; the React migration ships view-by-view. As of 2026-05-24, only the Today view is fully migrated in React; the other 8 are placeholders. Gradio stays as fallback until React reaches parity.
+
+**Why React over a 2nd Gradio version:** Gradio can't do left-rail nav, true modals, pull-to-refresh, swipe gestures, or native iOS packaging. We hit those ceilings during the Phase A-D density pass. React + Capacitor unlocks them and the iPhone delivery path simultaneously.
+
+**Why FastAPI in front of the existing helpers:** clean JSON API surface so React, native iOS, future Android, future watchOS, future CLI clients all consume the same endpoints. Backend can later move to a cloud VM independently of frontend deploys. API is self-documenting (FastAPI generates OpenAPI/Swagger at `/docs`).
+
+**File map of the new layer:**
+- `backend/api.py` — FastAPI app, 11 endpoints, CORS for Vite + Capacitor + LAN, Pydantic models, mounts `frontend/dist/` for production single-port serving
+- `frontend/` — Vite + React 19 + TS + Tailwind. Detailed structure in `FRONTEND.md`.
+- `frontend/ios/` — Capacitor 8 Xcode project, generated via `npx cap add ios`. Detailed in `MOBILE.md`.
+- `scripts/{dev,prod,ios}.sh` — startup helpers.
+
+**Migration order for next sessions:** Analyze view (chart-first, drill-down target) → Watchlist + Portfolio (table + drill-down) → Quick Trade wiring to `/api/trade` → Scanner → Agent / Signals / System / Logs → WebSocket push to replace polling → native iOS features (push notifications, Face ID, pull-to-refresh, swipe actions).
 
 ---
 

@@ -110,6 +110,16 @@ MODELS_CFG = {
 
 
 class EnsembleAnalyst:
+    # Class-level mutex serializing ALL Gemma inferences. MLX/Metal command
+    # buffers collide when two inference contexts run concurrently — symptom
+    # is `kIOGPUCommandBufferCallbackErrorInnocentVictim` and a SIGABRT that
+    # crashes the whole backend. Observed twice during volatile minutes after
+    # market open (parallel notable-event triggers from MarketStreamer firing
+    # `analyze_stock` on multiple tickers at once). Serializing here is cheap
+    # because Gemma is the bottleneck anyway (~3-5s/call) and crashes are
+    # vastly more expensive than queueing.
+    _gemma_lock = threading.Lock()
+
     def __init__(self, mode="single"):
         self.mode = mode
         self.models = {}
@@ -125,15 +135,17 @@ class EnsembleAnalyst:
     def analyze(self, prompt, model_key="gemma"):
         m = self.models["gemma"]
         t = self.tokenizers["gemma"]
-        
-        # Reduced max_tokens and added stop sequences to prevent generation loops
         sampler = make_sampler(temp=0.0)
-        response = generate(
-            m, t,
-            prompt=prompt,
-            sampler=sampler,
-            max_tokens=500
-        )
+        # All Gemma inferences (consensus path AND the single-mode raw call
+        # paths in analyze_stock / analyze_single_ticker_data) MUST go through
+        # this lock. See _gemma_lock docstring above.
+        with EnsembleAnalyst._gemma_lock:
+            response = generate(
+                m, t,
+                prompt=prompt,
+                sampler=sampler,
+                max_tokens=500,
+            )
         return response
 
     def get_consensus(self, ticker, prompt):
@@ -262,9 +274,212 @@ class TradeGatekeeper:
         await self.app.updater.start_polling()
 
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Routes Telegram inline-button taps. Three callback patterns:
+
+          • `REFEX:TICKER:SHARES:SL:TP` — fire-and-forget execute. The
+            Refresh-BUY messages embed this in the EXECUTE button.
+            Submits a MARKET bracket order via Alpaca, edits the message
+            to show the result. No waiting on any approval_event.
+
+          • `REFDISMISS:TICKER` — dismisses the message (just edits to mark
+            it as ignored).
+
+          • Anything else (legacy `EXECUTE` / `CANCEL`) — sets the
+            approval_event so the original request_approval() flow can
+            collect the user's choice.
+        """
         query = update.callback_query
         await query.answer()
-        self.user_choice = query.data
+        data = query.data or ""
+
+        # ─── Refresh-BUY direct execute (with wash-sale guard) ───────────
+        # Two callback flavors:
+        #   REFEX:TICK:SHARES:SL:TP       — first tap, runs wash-sale check
+        #   REFEXOK:TICK:SHARES:SL:TP     — second tap (override), bypasses check
+        if data.startswith("REFEX:") or data.startswith("REFEXOK:"):
+            try:
+                prefix, ticker, shares_s, sl_s, tp_s = data.split(":")
+                ticker = ticker.upper()
+                shares = int(shares_s)
+                sl = float(sl_s)
+                tp = float(tp_s)
+                override = (prefix == "REFEXOK")
+            except Exception as e:
+                await query.edit_message_text(text=f"❌ Bad callback data: {data}\n{e}")
+                return
+
+            # Wash-sale check — only on first tap (REFEX), not on override path
+            if not override:
+                try:
+                    ws = wash_sale_check(ticker)
+                except Exception:
+                    ws = {"risk": False, "hint": ""}
+                if ws.get("risk"):
+                    # Replace the message with a warning + 2-button override flow
+                    warn = (
+                        f"🛑 *WASH-SALE BLOCK · {ticker}*\n\n"
+                        f"{ws['hint']}\n\n"
+                        f"⚠️ Per IRS Section 1091, re-entering now would *disallow* "
+                        f"the prior loss for tax purposes (the loss gets added to "
+                        f"the new position's basis, but you can't claim it this year).\n\n"
+                        f"_Tap **EXECUTE ANYWAY** if you intend to override (e.g. "
+                        f"in a tax-advantaged account, or the loss timing doesn't matter)._"
+                    )
+                    new_kb = {
+                        "inline_keyboard": [[
+                            {"text": "⚠️ EXECUTE ANYWAY",
+                             "callback_data": f"REFEXOK:{ticker}:{shares}:{sl:.2f}:{tp:.2f}"},
+                            {"text": "⏭️ Cancel",
+                             "callback_data": f"REFDISMISS:{ticker}"},
+                        ]],
+                    }
+                    try:
+                        await query.edit_message_text(
+                            text=warn, parse_mode="Markdown",
+                            reply_markup=InlineKeyboardMarkup(new_kb["inline_keyboard"])
+                                if False else None,
+                        )
+                        # python-telegram-bot expects InlineKeyboardMarkup, not a dict;
+                        # build it properly:
+                        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+                        kb = InlineKeyboardMarkup([[
+                            InlineKeyboardButton("⚠️ EXECUTE ANYWAY",
+                                callback_data=f"REFEXOK:{ticker}:{shares}:{sl:.2f}:{tp:.2f}"),
+                            InlineKeyboardButton("⏭️ Cancel",
+                                callback_data=f"REFDISMISS:{ticker}"),
+                        ]])
+                        await query.edit_message_reply_markup(reply_markup=kb)
+                    except Exception:
+                        pass
+                    return
+
+            label = "MARKET bracket" + (" (wash-sale override)" if override else "")
+            await query.edit_message_text(
+                text=f"⏳ Submitting {label} BUY {shares} {ticker} (SL ${sl} / TP ${tp})…"
+            )
+            try:
+                result = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: alpaca_api.submit_bracket_order(
+                        ticker=ticker, action="buy", shares=shares,
+                        sl=sl, tp=tp, tif="GTC",
+                    ),
+                )
+                try:
+                    last_close = (history_cache.get(ticker, allow_stale=True) or [{}])[-1].get("c", 0)
+                    portfolio_mgr.add_position(
+                        ticker, shares, float(last_close or 0),
+                        sl=sl, tp=tp,
+                    )
+                except Exception:
+                    pass
+                tag = "✅ EXECUTED" + (" ⚠️ (wash-sale override)" if override else "")
+                await query.edit_message_text(
+                    text=f"{tag} · {ticker}\n{result}",
+                    parse_mode="Markdown",
+                )
+            except Exception as e:
+                await query.edit_message_text(text=f"❌ Order failed for {ticker}: {e}")
+            return
+
+        # ─── Refresh-BUY dismiss ──────────────────────────────────────────
+        if data.startswith("REFDISMISS:"):
+            ticker = data.split(":", 1)[1] if ":" in data else "?"
+            await query.edit_message_text(text=f"⏭️ Dismissed · {ticker}")
+            return
+
+        # ─── SELL execute (from SL/TP exit alert) ─────────────────────────
+        # SELLEX:TICKER:SHARES — closes the WHOLE Alpaca position at market
+        # and removes it from the local portfolio tracker. close_position also
+        # cancels any open SL/TP bracket legs.
+        if data.startswith("SELLEX:"):
+            try:
+                _, ticker, shares_s = data.split(":")
+                ticker = ticker.upper()
+            except Exception as e:
+                await query.edit_message_text(text=f"❌ Bad callback data: {data}\n{e}")
+                return
+            await query.edit_message_text(text=f"⏳ Closing {ticker} position at market…")
+            try:
+                result = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: alpaca_api.close_position(ticker)
+                )
+                # "position not found" = local tracker has drifted out of sync
+                # with Alpaca (the position was already closed at the broker,
+                # e.g. a bracket leg filled). Self-heal: drop the phantom local
+                # row so it stops generating alerts, and tell the user plainly.
+                if "position not found" in result.lower() or "40410000" in result:
+                    try:
+                        portfolio_mgr.remove_position(ticker)
+                        portfolio_mgr._alert_state[ticker] = None
+                    except Exception:
+                        pass
+                    await query.edit_message_text(
+                        text=(f"ℹ️ {ticker} was already closed at Alpaca (no live "
+                              f"position). Cleared it from the local tracker — "
+                              f"these phantom alerts will stop now."),
+                    )
+                    return
+                # Real close succeeded
+                try:
+                    portfolio_mgr.remove_position(ticker)
+                    portfolio_mgr._alert_state[ticker] = None
+                except Exception:
+                    pass
+                await query.edit_message_text(
+                    text=f"✅ SOLD · {ticker}\n{result}", parse_mode="Markdown",
+                )
+            except Exception as e:
+                await query.edit_message_text(text=f"❌ Sell failed for {ticker}: {e}")
+            return
+
+        # SELLHOLD:TICKER — user chose to hold. Acknowledge + mark so we don't
+        # re-alert this exact zone (state already set when alert fired; this
+        # just edits the message so the buttons disappear).
+        if data.startswith("SELLHOLD:"):
+            ticker = data.split(":", 1)[1] if ":" in data else "?"
+            await query.edit_message_text(
+                text=f"✊ Holding {ticker}. (No further alert until price exits "
+                     f"and re-enters the trigger zone.)"
+            )
+            return
+
+        # PROTECT:TICKER — place a real protective OCO (SL+TP) at Alpaca on the
+        # full position so it auto-exits even if NuroQ is offline. SL/TP/shares
+        # resolved from the live position + local tracker by the executor path.
+        if data.startswith("PROTECT:"):
+            ticker = (data.split(":", 1)[1] if ":" in data else "").upper()
+            await query.edit_message_text(text=f"⏳ Placing protective OCO on {ticker}…")
+            try:
+                # Resolve qty + levels
+                positions = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: alpaca_api.list_positions() or []
+                )
+                pos = next((p for p in positions if p["symbol"] == ticker), None)
+                if pos is None:
+                    await query.edit_message_text(text=f"❌ No live position for {ticker}.")
+                    return
+                shares = int(pos["qty"])
+                df = portfolio_mgr.get_portfolio()
+                row = df[df["Ticker"].str.upper() == ticker] if not df.empty else None
+                sl = float(row.iloc[0]["Stop Loss"]) if (row is not None and not row.empty) else 0
+                tp = float(row.iloc[0]["Take Profit"]) if (row is not None and not row.empty) else 0
+                if not sl or not tp:
+                    await query.edit_message_text(
+                        text=f"❌ {ticker}: no SL/TP in tracker to protect with.")
+                    return
+                result = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: alpaca_api.submit_protective_oco(ticker, shares, sl, tp)
+                )
+                await query.edit_message_text(
+                    text=f"🛡️ {ticker}\n{result}", parse_mode="Markdown")
+            except Exception as e:
+                await query.edit_message_text(text=f"❌ Protect failed for {ticker}: {e}")
+            return
+
+        # ─── Legacy synchronous-approval path ─────────────────────────────
+        self.user_choice = data
         await query.edit_message_text(text=f"🔘 Choice Received: {self.user_choice}. Processing...")
         self.approval_event.set()
 
@@ -351,6 +566,11 @@ class PortfolioManager:
     def __init__(self, db_path="nuroq.db"):
         self.db_path = db_path
         self.cols = ["Ticker", "Shares", "Avg Price", "Current Price", "Total Value", "PnL %", "Stop Loss", "Take Profit", "AI Score", "AI Rating", "Entry Date"]
+        # Per-ticker alert dedup: tracks which alert kind ("TP"/"SL") we've
+        # already sent so the 60s monitor loop doesn't re-spam the same hit.
+        # Re-arms (clears) once price exits the trigger zone, so a fresh
+        # re-entry into the zone alerts again. {ticker: "TP" | "SL" | None}
+        self._alert_state: dict = {}
         self._init_db()
 
     def _init_db(self):
@@ -442,10 +662,166 @@ class PortfolioManager:
                                 VALUES (?, ?, ?, ?, ?, 0.0, ?, ?, ?, ?, ?)''',
                              (ticker, shares, price, price, total_val, sl, tp, score, rating, now))
 
+    def _reconcile_with_alpaca(self) -> None:
+        """
+        Two-way sync of the local portfolio table with Alpaca's real positions.
+        See refresh_prices for rationale. No-op (safe) on any Alpaca API error.
+        """
+        try:
+            live = alpaca_api.list_positions()
+        except Exception as e:
+            logger.log(f"⚠️ Reconcile: list_positions failed: {e}", level="WARNING")
+            return
+        if live is None:
+            return  # query failed — don't touch the tracker
+
+        live_by_sym = {p["symbol"].upper(): p for p in live}
+
+        # Current local holdings
+        local_df = self.get_portfolio()
+        local_syms = set(local_df['Ticker'].str.upper()) if not local_df.empty else set()
+
+        # 1. REMOVE phantoms (local but not at Alpaca)
+        for t in list(local_syms):
+            if t not in live_by_sym:
+                logger.log(f"🧹 Reconcile: {t} held locally but not at Alpaca — "
+                           f"removing phantom position.", level="INFO")
+                self.remove_position(t)
+                self._alert_state[t] = None
+
+        # Bracket levels (TP/SL from open SELL legs) — fetched once, used by
+        # both the import branch and the backfill branch below.
+        bracket_levels = {}
+        try:
+            bracket_levels = alpaca_api.get_bracket_levels()
+        except Exception:
+            pass
+
+        # 2. IMPORT missing (at Alpaca but not local). Pull SL/TP from open
+        #    bracket SELL legs so the monitor can alert on them.
+        missing = [s for s in live_by_sym if s not in local_syms]
+        if missing:
+            for sym in missing:
+                p = live_by_sym[sym]
+                lv = bracket_levels.get(sym, {})
+                sl = lv.get("sl") or 0
+                tp = lv.get("tp") or 0
+
+                # If Alpaca has no open bracket for this position, derive an
+                # ADVISORY SL/TP from ATR so the monitor can still alert on it.
+                # These are local-only targets (no real Alpaca order placed) —
+                # they drive the Telegram exit alert + SELL button, where YOU
+                # decide whether to actually close. Same ATR math NuroQ uses
+                # everywhere: SL = entry − 2·ATR, TP = entry + 4·ATR.
+                advisory = False
+                if not sl or not tp:
+                    try:
+                        bars = history_cache.get(sym, allow_stale=True) or []
+                        techs = calculate_technicals(bars) if bars else {}
+                        entry = float(p["avg_entry_price"])
+                        atr = float((techs or {}).get("atr") or max(entry * 0.02, 0.5))
+                        sizing = calculate_sizing(entry, atr=atr, account=_live_equity())
+                        if not sl:
+                            sl = float(sizing.get("sl") or 0)
+                        if not tp:
+                            tp = float(sizing.get("tp") or 0)
+                        advisory = True
+                    except Exception as e:
+                        logger.log(f"⚠️ Advisory SL/TP calc failed for {sym}: {e}",
+                                   level="WARNING")
+
+                rating = "IMPORTED*" if advisory else "IMPORTED"
+                logger.log(f"➕ Reconcile: importing {sym} from Alpaca "
+                           f"({p['qty']:g} @ ${p['avg_entry_price']:.2f}, "
+                           f"SL=${sl or 0:.2f} TP=${tp or 0:.2f}"
+                           f"{' [advisory ATR]' if advisory else ' [from bracket]'}).",
+                           level="INFO")
+                try:
+                    self.add_position(
+                        sym, p["qty"], p["avg_entry_price"],
+                        sl=sl, tp=tp, score=0, rating=rating,
+                    )
+                    self._alert_state[sym] = None
+                except Exception as e:
+                    logger.log(f"⚠️ Reconcile import failed for {sym}: {e}", level="WARNING")
+
+        # 3. BACKFILL SL/TP on EXISTING local rows that have none. Covers
+        #    positions imported in a prior cycle before advisory levels existed,
+        #    and any held name still missing a target. Prefers a real Alpaca
+        #    bracket level; falls back to advisory ATR. Never overwrites an
+        #    existing non-zero level.
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                rows = conn.execute(
+                    "SELECT ticker, avg_price, stop_loss, take_profit FROM portfolio"
+                ).fetchall()
+            for tkr, avg_p, cur_sl, cur_tp in rows:
+                sym = tkr.upper()
+                if sym not in live_by_sym:
+                    continue
+                need_sl = not cur_sl or cur_sl <= 0
+                need_tp = not cur_tp or cur_tp <= 0
+                if not (need_sl or need_tp):
+                    continue
+
+                lv = bracket_levels.get(sym, {})
+                new_sl = cur_sl or 0
+                new_tp = cur_tp or 0
+                if need_sl and lv.get("sl"):
+                    new_sl = float(lv["sl"])
+                if need_tp and lv.get("tp"):
+                    new_tp = float(lv["tp"])
+
+                # Still missing after brackets → advisory ATR
+                if (need_sl and not new_sl) or (need_tp and not new_tp):
+                    try:
+                        bars = history_cache.get(sym, allow_stale=True) or []
+                        techs = calculate_technicals(bars) if bars else {}
+                        entry = float(avg_p)
+                        atr = float((techs or {}).get("atr") or max(entry * 0.02, 0.5))
+                        sizing = calculate_sizing(entry, atr=atr, account=_live_equity())
+                        if need_sl and not new_sl:
+                            new_sl = float(sizing.get("sl") or 0)
+                        if need_tp and not new_tp:
+                            new_tp = float(sizing.get("tp") or 0)
+                    except Exception:
+                        pass
+
+                if new_sl != (cur_sl or 0) or new_tp != (cur_tp or 0):
+                    with sqlite3.connect(self.db_path) as conn:
+                        conn.execute(
+                            "UPDATE portfolio SET stop_loss=?, take_profit=? WHERE ticker=?",
+                            (new_sl, new_tp, sym),
+                        )
+                    logger.log(f"🎯 Reconcile: backfilled {sym} targets — "
+                               f"SL=${new_sl:.2f} TP=${new_tp:.2f}.", level="INFO")
+        except Exception as e:
+            logger.log(f"⚠️ SL/TP backfill failed: {e}", level="WARNING")
+
     def refresh_prices(self):
         df = self.get_portfolio()
-        if df.empty: return df
-        
+        if df.empty:
+            # Even with an empty local tracker, Alpaca may hold positions
+            # opened elsewhere — reconcile imports them before we bail.
+            self._reconcile_with_alpaca()
+            df = self.get_portfolio()
+            if df.empty:
+                return df
+
+        # ─── Two-way reconcile local tracker against Alpaca ────────────────
+        # Make the local tracker mirror the broker, so SL/TP monitoring covers
+        # every real position regardless of where it was opened:
+        #   • REMOVE phantoms — local rows Alpaca doesn't have (already closed).
+        #   • IMPORT missing — Alpaca positions not in local tracker, pulling
+        #     avg cost + current price from the position and SL/TP from the
+        #     open bracket SELL legs.
+        # Only acts when the Alpaca query SUCCEEDS (not None), so a transient
+        # API error never wipes or corrupts the tracker.
+        self._reconcile_with_alpaca()
+
+        df = self.get_portfolio()
+        if df.empty:
+            return df
         tickers = df['Ticker'].tolist()
         try:
             data = yf.download(tickers, period="1d", group_by='ticker', threads=True, progress=False)
@@ -462,24 +838,112 @@ class PortfolioManager:
                         
                         pnl_pct = round(((curr_price - avg_p) / avg_p) * 100, 2)
                         total_val = round(shares * curr_price, 2)
-                        
-                        conn.execute('''UPDATE portfolio 
-                                        SET current_price=?, pnl_pct=?, total_value=? 
+
+                        conn.execute('''UPDATE portfolio
+                                        SET current_price=?, pnl_pct=?, total_value=?
                                         WHERE ticker=?''', (curr_price, pnl_pct, total_val, ticker))
-                        
-                        # Alert Check
-                        if sl > 0 and curr_price <= sl:
+
+                        # ─── Deduped, actionable SL/TP alerts ──────────────
+                        # Fire ONCE when price enters the trigger zone. Re-arm
+                        # only after price exits, so the 60s monitor loop won't
+                        # re-spam the same hit. Each alert carries full position
+                        # context + a SELL EXECUTE / Hold button pair.
+                        prev_alert = self._alert_state.get(ticker)
+                        in_sl = sl > 0 and curr_price <= sl
+                        in_tp = tp > 0 and curr_price >= tp
+
+                        if in_sl and prev_alert != "SL":
                             logger.log(f"🛑 STOP LOSS HIT: {ticker} at ${curr_price} (Target: ${sl})", level="WARNING")
-                            gatekeeper.send_notification(f"🛑 ALERT: Stop Loss hit for {ticker} at ${curr_price}. Position is underwater.")
-                        elif tp > 0 and curr_price >= tp:
+                            self._send_exit_alert(
+                                kind="SL", ticker=ticker, curr_price=curr_price,
+                                avg_p=avg_p, shares=shares, sl=sl, tp=tp,
+                                pnl_pct=pnl_pct, total_val=total_val,
+                            )
+                            self._alert_state[ticker] = "SL"
+                        elif in_tp and prev_alert != "TP":
                             logger.log(f"🎯 TAKE PROFIT HIT: {ticker} at ${curr_price} (Target: ${tp})", level="INFO")
-                            gatekeeper.send_notification(f"🎯 ALERT: Take Profit hit for {ticker} at ${curr_price}. Time to harvest gains?")
+                            self._send_exit_alert(
+                                kind="TP", ticker=ticker, curr_price=curr_price,
+                                avg_p=avg_p, shares=shares, sl=sl, tp=tp,
+                                pnl_pct=pnl_pct, total_val=total_val,
+                            )
+                            self._alert_state[ticker] = "TP"
+                        elif not in_sl and not in_tp and prev_alert is not None:
+                            # Price exited the zone — re-arm for next entry.
+                            self._alert_state[ticker] = None
                     except Exception as e:
                         logger.log(f"⚠️ Price refresh skipped for {ticker}: {e}", level="WARNING")
                         continue
         except Exception as e:
             logger.log(f"⚠️ Portfolio Refresh Error: {e}", level="ERROR")
         return self.get_portfolio()
+
+    def _send_exit_alert(self, kind: str, ticker: str, curr_price: float,
+                         avg_p: float, shares: float, sl: float, tp: float,
+                         pnl_pct: float, total_val: float) -> None:
+        """
+        Rich, actionable SL/TP alert to Telegram with a SELL EXECUTE button.
+        `kind` is "TP" (take profit) or "SL" (stop loss). The message includes
+        everything needed to make a profit-taking / exit decision: shares,
+        position value, cost basis, unrealized P&L ($ and %), and the trigger.
+
+        Inline buttons:
+          • 💰 SELL ALL (market)  → callback SELLEX:TICKER:SHARES
+          • ✊ Hold               → callback SELLHOLD:TICKER
+        """
+        token = os.getenv("TELEGRAM_TOKEN")
+        chat = os.getenv("TELEGRAM_CHAT_ID")
+
+        cost_basis = avg_p * shares
+        unreal_pl = (curr_price - avg_p) * shares
+        pl_sign = "+" if unreal_pl >= 0 else ""
+        qty = int(shares) if float(shares) == int(shares) else shares
+
+        if kind == "TP":
+            header = f"🎯 *TAKE-PROFIT HIT · {ticker}*"
+            trigger_line = f"Price *${curr_price:.2f}* reached TP target *${tp:.2f}* ✅"
+            cta = "_Lock in the gain, or hold for more upside?_"
+        else:
+            header = f"🛑 *STOP-LOSS HIT · {ticker}*"
+            trigger_line = f"Price *${curr_price:.2f}* fell to SL target *${sl:.2f}* ⚠️"
+            cta = "_Cut the loss, or hold through the dip?_"
+
+        msg = (
+            f"{header}\n"
+            f"{trigger_line}\n\n"
+            f"📊 *Position*\n"
+            f"Shares: *{qty}*  ·  Avg cost: *${avg_p:.2f}*\n"
+            f"Now: *${curr_price:.2f}*  ·  Value: *${total_val:,.2f}*\n"
+            f"Cost basis: *${cost_basis:,.2f}*\n"
+            f"Unrealized P&L: *{pl_sign}${unreal_pl:,.2f}* ({pl_sign}{pnl_pct:.2f}%)\n\n"
+            f"{cta}"
+        )
+
+        if not token or not chat:
+            logger.log(f"⚠️ {kind} alert for {ticker}: Telegram creds missing.", level="WARNING")
+            return
+
+        reply_markup = {
+            "inline_keyboard": [[
+                {"text": f"💰 SELL ALL ({qty})", "callback_data": f"SELLEX:{ticker}:{qty}"},
+                {"text": "✊ Hold",              "callback_data": f"SELLHOLD:{ticker}"},
+            ]],
+        }
+        try:
+            import requests as _rq
+            r = _rq.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={"chat_id": chat, "text": msg, "parse_mode": "Markdown",
+                      "reply_markup": reply_markup},
+                timeout=10,
+            )
+            if r.status_code == 200:
+                logger.log(f"📱 {kind} exit alert sent for {ticker} (with SELL button).")
+            else:
+                logger.log(f"⚠️ {kind} alert send failed for {ticker}: HTTP {r.status_code}",
+                           level="WARNING")
+        except Exception as e:
+            logger.log(f"⚠️ {kind} alert exception for {ticker}: {e}", level="WARNING")
 
     def remove_position(self, ticker):
         with sqlite3.connect(self.db_path) as conn:
@@ -634,20 +1098,58 @@ def run_research_cycle(top_n: int = 150) -> str:
 
     try:
         logger.log(f"🔬 [Research Cycle] Starting ad-hoc Tier-1 refresh (top {top_n})...")
-        target_date = get_last_trading_day()
-        date_20d_ago = get_trading_day_n_ago(20)
 
-        rate_limiter.wait()
-        url_curr = (f"https://api.polygon.io/v2/aggs/grouped/locale/us/market/stocks/"
-                    f"{target_date}?adjusted=true&apiKey={POLYGON_API_KEY}")
+        # `get_last_trading_day()` only excludes weekends — it doesn't know
+        # about US market holidays (Memorial Day, July 4, etc.). If we land
+        # on a holiday, Polygon returns `status=OK, resultsCount=0`. Roll
+        # the date back day-by-day (skipping weekends) until we find a day
+        # with real data. Caps at 10 calendar days as a safety belt.
+        target_date = get_last_trading_day()
+        resp_c = None
+        for attempt in range(10):
+            rate_limiter.wait()
+            url_curr = (f"https://api.polygon.io/v2/aggs/grouped/locale/us/market/stocks/"
+                        f"{target_date}?adjusted=true&apiKey={POLYGON_API_KEY}")
+            r = requests.get(url_curr, timeout=20).json()
+            results = r.get("results") or []
+            if results:
+                resp_c = r
+                if attempt > 0:
+                    logger.log(f"   ↳ Holiday/empty rollback: using {target_date} "
+                               f"(after {attempt} day(s) skipped).", level="INFO")
+                break
+            # Roll back to the previous weekday
+            from datetime import datetime as _dt
+            d = _dt.strptime(target_date, "%Y-%m-%d").date()
+            old_date = target_date
+            while True:
+                d -= timedelta(days=1)
+                if d.weekday() < 5:  # Mon-Fri
+                    break
+            target_date = d.strftime("%Y-%m-%d")
+            logger.log(f"   ↳ Empty snapshot for {old_date} (likely holiday), "
+                       f"trying {target_date}…", level="WARNING")
+        if resp_c is None:
+            raise RuntimeError(
+                "Polygon snapshot returned no results for 10 consecutive trading days — "
+                "Polygon outage, missing API key, or extended market closure?"
+            )
+
+        # Compute the 20-trading-day-ago anchor relative to the date we settled on
+        from datetime import datetime as _dt
+        anchor = _dt.strptime(target_date, "%Y-%m-%d").date()
+        d20 = anchor
+        skipped = 0
+        while skipped < 20:
+            d20 -= timedelta(days=1)
+            if d20.weekday() < 5:
+                skipped += 1
+        date_20d_ago = d20.strftime("%Y-%m-%d")
+
         rate_limiter.wait()
         url_hist = (f"https://api.polygon.io/v2/aggs/grouped/locale/us/market/stocks/"
                     f"{date_20d_ago}?adjusted=true&apiKey={POLYGON_API_KEY}")
-
-        resp_c = requests.get(url_curr, timeout=20).json()
         resp_h = requests.get(url_hist, timeout=20).json()
-        if "results" not in resp_c:
-            raise RuntimeError("Polygon snapshot returned no results")
 
         hist_prices = {item['T']: item['c'] for item in resp_h.get("results", [])}
 
@@ -1163,6 +1665,154 @@ def refresh_today_view():
             render_today_cards(), render_next_actions(), render_channel_bar())
 
 
+# ─── Wash-sale check (Layer 1) ───────────────────────────────────────────────
+#
+# IRS Section 1091: if you sell a security at a LOSS, then buy a "substantially
+# identical" security within 30 days before OR after the sale, the loss is
+# DISALLOWED for tax purposes that year. The disallowed loss is added to the
+# basis of the replacement shares.
+#
+# Critical for algorithmic trading: the live agent's default 30-min per-ticker
+# cooldown is far shorter than the IRS 30-day window. Without this guard, an
+# auto-stopped position re-entered hours later would create a wash sale on
+# every cycle.
+#
+# Layer 1 implementation:
+#   • Queries Alpaca for closed SELL fills of the ticker in the last 30 days.
+#   • For each, finds the nearest prior BUY fill as a proxy for cost basis
+#     (not perfect for FIFO/LIFO lot tracking but conservative enough for a
+#     warning system).
+#   • Flags any SELL where fill_price < proxy_basis (likely a loss).
+#   • Returns structured result so callers can decide: warn, block, or override.
+#
+# All BUY entry points (live agent crossings, Telegram EXECUTE button,
+# /api/trade endpoint) gate on this. Callers can pass override=True to bypass
+# the block (used for the "execute anyway" second-tap pattern).
+#
+# Cache: results memoized per-ticker for WASH_SALE_CACHE_TTL seconds to avoid
+# hammering Alpaca on rapid re-checks. Cleared automatically on backend restart.
+
+WASH_SALE_DAYS         = 30        # IRS lookback window
+WASH_SALE_CACHE_TTL    = 300       # seconds — 5 min memoization
+
+# Module-level cache: {ticker: (timestamp, result_dict)}
+_wash_sale_cache: dict = {}
+_wash_sale_lock = threading.Lock()
+
+
+def wash_sale_check(ticker: str, force_refresh: bool = False) -> dict:
+    """
+    Returns structured wash-sale risk assessment for `ticker`. Schema:
+      {
+        "ticker": "SAN",
+        "risk": bool,                  # any LIKELY-LOSS sell in window?
+        "recent_sells": [              # ALL sells in window (any P&L)
+          {"ts": float, "qty": float, "sell_price": float, "days_ago": int}
+        ],
+        "likely_loss_sells": [         # subset of recent_sells with proxy loss
+          {"ts": float, "qty": float, "sell_price": float, "basis_price": float,
+           "days_ago": int, "approx_loss_per_share": float,
+           "approx_total_loss": float}
+        ],
+        "hint": "Sold 1000 SAN @ $12.50 on 2026-05-24 (basis ~$13.00 — likely loss). Re-entering today would disallow ~$500 of the loss.",
+        "days_until_safe": int,        # 31 - max_days_ago (re-entry without wash risk)
+        "cached_at": float,            # unix ts of when this result was computed
+      }
+    Returns risk=False on any error (fail-open — don't block trades on infra issues).
+    """
+    ticker = (ticker or "").upper().strip()
+    if not ticker:
+        return {"ticker": "", "risk": False, "recent_sells": [], "likely_loss_sells": [],
+                "hint": "", "days_until_safe": 0, "cached_at": time.time()}
+
+    # Cache hit?
+    with _wash_sale_lock:
+        if not force_refresh and ticker in _wash_sale_cache:
+            ts, cached = _wash_sale_cache[ticker]
+            if time.time() - ts < WASH_SALE_CACHE_TTL:
+                return cached
+
+    try:
+        fills = alpaca_api.get_recent_fills(ticker=ticker, days=WASH_SALE_DAYS)
+    except Exception as e:
+        logger.log(f"⚠️ wash_sale_check({ticker}): Alpaca lookup failed: {e} — failing open.",
+                   level="WARNING")
+        return {"ticker": ticker, "risk": False, "recent_sells": [], "likely_loss_sells": [],
+                "hint": "Wash-sale check unavailable (Alpaca query failed).",
+                "days_until_safe": 0, "cached_at": time.time()}
+
+    # Partition + chronological order. fills come newest-first; we want
+    # chronological so we can pair each SELL with the nearest prior BUY.
+    fills_chrono = sorted(fills, key=lambda f: f["filled_at_ts"])
+    sells = [f for f in fills_chrono if f["side"] == "SELL"]
+    buys  = [f for f in fills_chrono if f["side"] == "BUY"]
+
+    now = time.time()
+    recent_sells = []
+    likely_loss = []
+
+    for s in sells:
+        days_ago = int((now - s["filled_at_ts"]) / 86400)
+        recent_sells.append({
+            "ts":         s["filled_at_ts"],
+            "qty":        s["qty"],
+            "sell_price": s["fill_price"],
+            "days_ago":   days_ago,
+        })
+        # Nearest prior BUY = proxy basis. Not lot-accurate but conservative.
+        prior_buys = [b for b in buys if b["filled_at_ts"] < s["filled_at_ts"]]
+        if not prior_buys:
+            continue
+        prior_buys.sort(key=lambda b: b["filled_at_ts"], reverse=True)
+        basis_px = prior_buys[0]["fill_price"]
+        if s["fill_price"] < basis_px:
+            loss_per_share = basis_px - s["fill_price"]
+            likely_loss.append({
+                "ts":                    s["filled_at_ts"],
+                "qty":                   s["qty"],
+                "sell_price":            s["fill_price"],
+                "basis_price":           basis_px,
+                "days_ago":              days_ago,
+                "approx_loss_per_share": round(loss_per_share, 4),
+                "approx_total_loss":     round(loss_per_share * s["qty"], 2),
+            })
+
+    risk = bool(likely_loss)
+    days_until_safe = 0
+    if recent_sells:
+        # Re-entering N days after the most-recent sell becomes safe at
+        # WASH_SALE_DAYS+1 days from the sell. (IRS counts the day of sale.)
+        max_days_ago = max(s["days_ago"] for s in recent_sells)
+        days_until_safe = max(0, WASH_SALE_DAYS + 1 - max_days_ago)
+
+    if not recent_sells:
+        hint = f"No SELLs of {ticker} in the last {WASH_SALE_DAYS} days — safe to enter."
+    elif not likely_loss:
+        hint = (f"You sold {ticker} {len(recent_sells)} time(s) in the last "
+                f"{WASH_SALE_DAYS} days but none appear to be at a loss vs the prior "
+                f"buy price. Wash sale rule only applies to LOSS sales — likely fine.")
+    else:
+        worst = max(likely_loss, key=lambda x: x["approx_total_loss"])
+        hint = (f"⚠️ Wash-sale risk: sold {int(worst['qty'])} {ticker} @ "
+                f"${worst['sell_price']:.2f} on {datetime.fromtimestamp(worst['ts']).strftime('%Y-%m-%d')} "
+                f"vs basis ~${worst['basis_price']:.2f} (likely loss of "
+                f"~${worst['approx_total_loss']:.0f}). Re-entering today would disallow "
+                f"the loss. Wait {days_until_safe} more day(s) to clear the window.")
+
+    result = {
+        "ticker":            ticker,
+        "risk":              risk,
+        "recent_sells":      recent_sells,
+        "likely_loss_sells": likely_loss,
+        "hint":              hint,
+        "days_until_safe":   days_until_safe,
+        "cached_at":         time.time(),
+    }
+    with _wash_sale_lock:
+        _wash_sale_cache[ticker] = (time.time(), result)
+    return result
+
+
 def render_next_actions() -> str:
     """
     Smart 'what to do next' card on the Today tab. Analyzes current system
@@ -1551,7 +2201,7 @@ def render_alpaca_panel() -> str:
 
 
 def handle_quick_trade(ticker, shares, action, order_type, tif, limit_price, stop_price,
-                       sl_price=None, tp_price=None):
+                       sl_price=None, tp_price=None, wash_sale_override: bool = False):
     if not ticker or shares is None or shares <= 0:
         return "⚠️ Please enter a valid ticker and a share amount greater than 0."
 
@@ -1561,11 +2211,32 @@ def handle_quick_trade(ticker, shares, action, order_type, tif, limit_price, sto
     if order_type in ["Stop", "Stop Limit", "Trailing Stop"] and not stop_price:
         return f"⚠️ {order_type} orders require a Stop Price (or Trailing Value)."
 
-    # Bracket path: Market entry + SL + TP atomically
-    if order_type == "Market" and sl_price and tp_price and sl_price > 0 and tp_price > 0:
+    # Wash-sale guard — BUY entries only. SELL exits aren't wash sales by themselves.
+    # `wash_sale_override=True` is the "execute anyway" path (e.g. second tap on
+    # a Telegram override button or explicit user flag from the iOS modal).
+    if action.lower() == "buy" and not wash_sale_override:
+        ws = wash_sale_check(ticker)
+        if ws["risk"]:
+            return (
+                f"🛑 WASH-SALE BLOCK · {ticker.upper()}\n{ws['hint']}\n"
+                f"To override, resubmit with the wash-sale acknowledgment "
+                f"(in Quick Trade: tap BUY again within 10s; in Telegram: tap "
+                f"the override button)."
+            )
+
+    # Bracket path: Market OR Limit entry + SL + TP atomically.
+    # Market bracket: fills immediately at current price. Use when reacting fast.
+    # Limit bracket: fills only at your specified price or better. Use for
+    #   price-disciplined entries — e.g. "buy SAN at $12.04 or cheaper".
+    if (order_type in ("Market", "Limit")
+            and sl_price and tp_price
+            and sl_price > 0 and tp_price > 0):
+        if order_type == "Limit" and (not limit_price or limit_price <= 0):
+            return "⚠️ Limit bracket requires a Limit Price > 0."
         return alpaca_api.submit_bracket_order(
             ticker=ticker, action=action, shares=int(shares),
             sl=float(sl_price), tp=float(tp_price), tif=tif,
+            limit_price=float(limit_price) if order_type == "Limit" else None,
         )
 
     # Single-order path (existing behavior)
@@ -1583,6 +2254,195 @@ TOP_TICKERS = [
 # get_polygon_news, get_fundamentals, get_full_history, get_earnings_risk,
 # get_sentiment, calculate_technicals, get_weekly_confluence,
 # calculate_sizing, calculate_quant_score — all imported from data_fetcher / scoring
+
+def _describe_price_action(ticker: str, bars: list) -> str:
+    """
+    Turn cached daily bars into a compact natural-language summary the LLM can
+    reason over: recent move, monthly breakdown, 52-period high/low, vol.
+    Keeps the prompt grounded so the model answers from data, not vibes.
+    """
+    if not bars:
+        return f"No price history cached for {ticker}."
+    try:
+        recent = bars[-90:] if len(bars) > 90 else bars
+        first, last = recent[0], recent[-1]
+        p0 = float(first.get("c") or 0)
+        p1 = float(last.get("c") or 0)
+        pct = ((p1 - p0) / p0 * 100) if p0 else 0
+        hi = max(float(b.get("h") or b.get("c") or 0) for b in recent)
+        lo = min(float(b.get("l") or b.get("c") or 0) for b in recent if (b.get("l") or b.get("c")))
+
+        # Month-by-month close summary (helps "why did X move in May" questions)
+        from collections import OrderedDict
+        by_month = OrderedDict()
+        for b in recent:
+            t = str(b.get("t") or "")[:7]  # YYYY-MM
+            if t:
+                by_month.setdefault(t, []).append(float(b.get("c") or 0))
+        month_lines = []
+        for ym, closes in by_month.items():
+            if closes:
+                m_first, m_last = closes[0], closes[-1]
+                m_pct = ((m_last - m_first) / m_first * 100) if m_first else 0
+                month_lines.append(f"  {ym}: {m_first:.2f} → {m_last:.2f} ({m_pct:+.1f}%)")
+
+        return (
+            f"{ticker} price action (last {len(recent)} trading days):\n"
+            f"  Period: {first.get('t','?')} to {last.get('t','?')}\n"
+            f"  Move: ${p0:.2f} → ${p1:.2f} ({pct:+.1f}%)\n"
+            f"  Range: low ${lo:.2f} / high ${hi:.2f}\n"
+            f"  By month (close → close):\n" + "\n".join(month_lines)
+        )
+    except Exception as e:
+        return f"{ticker}: price summary unavailable ({e})."
+
+
+def ask_about_ticker(ticker: str, question: str) -> dict:
+    """
+    Free-form Q&A about a ticker — the 'AI mode' search bar under the chart.
+    Grounds Gemma with: recent price action, cached + live news, SEC-filing RAG
+    context relevant to the question, and fundamentals. Returns a dict:
+      {ticker, question, answer, sources: [..], grounded: bool}
+
+    Runs through analyst.analyze() so it shares the Gemma GPU lock (no Metal
+    crash from concurrent inference). Allow ~3-6 s.
+    """
+    ticker = (ticker or "").upper().strip()
+    question = (question or "").strip()
+    if not ticker:
+        return {"ticker": "", "question": question, "answer": "Please specify a ticker.",
+                "sources": [], "grounded": False}
+    if not question:
+        return {"ticker": ticker, "question": "", "answer": "Please enter a question.",
+                "sources": [], "grounded": False}
+
+    sources = []
+
+    # 1. Price action (cached daily bars — no API call)
+    bars = history_cache.get(ticker, allow_stale=True) or []
+    price_ctx = _describe_price_action(ticker, bars)
+    if bars:
+        sources.append("price history")
+
+    # 2. Fundamentals (memoized)
+    try:
+        funds = get_fundamentals(ticker) or {}
+        company = funds.get("name") or ticker
+        funds_ctx = (f"{company} fundamentals: P/E {funds.get('pe','N/A')}, "
+                     f"revenue growth {funds.get('growth','N/A')}, "
+                     f"industry {funds.get('industry','N/A')}.")
+        if funds.get("pe") not in (None, "N/A"):
+            sources.append("fundamentals")
+    except Exception:
+        company = ticker
+        funds_ctx = ""
+
+    # 3. News context — CACHE-FIRST (instant). We read the news_cache table
+    #    directly instead of get_polygon_news() because the latter calls
+    #    rate_limiter.wait() which can sleep up to ~60s. For a snappy chat
+    #    experience we prefer the cached headlines the overnight cycle +
+    #    NewsPoller already ingested. Live Polygon is a bounded fallback only.
+    news_ctx = ""
+    try:
+        with sqlite3.connect("nuroq.db") as conn:
+            rows = conn.execute(
+                "SELECT headline, classification, datetime(ingested_at,'unixepoch','localtime') "
+                "FROM news_cache WHERE ticker = ? ORDER BY ingested_at DESC LIMIT 8",
+                (ticker,),
+            ).fetchall()
+        if rows:
+            news_ctx = "\n".join(f"[{c}] {h} ({when})" for h, c, when in rows)[:1800]
+            sources.append("cached news")
+    except Exception as e:
+        logger.log(f"⚠️ ask_about_ticker news-cache read failed for {ticker}: {e}", level="WARNING")
+
+    # Bounded live fallback: only if the cache had nothing, and capped at 8s so
+    # a rate-limiter pause can't hang the whole request.
+    if not news_ctx:
+        try:
+            import concurrent.futures as _cf
+            with _cf.ThreadPoolExecutor(max_workers=1) as _ex:
+                fut = _ex.submit(lambda: get_polygon_news(ticker, logger=logger))
+                polly = fut.result(timeout=8)
+            if polly:
+                news_ctx = polly[:1500]
+                sources.append("live news")
+        except Exception:
+            pass  # timeout or error → proceed without live news
+
+    # 4. SEC filing RAG context — best-effort, BOUNDED to 10s. A cold ticker
+    #    triggers a live EDGAR fetch + embedding which can take 30s+. We cap it
+    #    so the chat stays responsive; for "why did it move" questions, news +
+    #    price action carry most of the signal anyway.
+    rag_ctx = ""
+    try:
+        import concurrent.futures as _cf
+        with _cf.ThreadPoolExecutor(max_workers=1) as _ex:
+            fut = _ex.submit(lambda: rag.get_grounded_context(ticker, query=question))
+            rag_ctx = (fut.result(timeout=10) or "")[:2000]
+        if rag_ctx:
+            sources.append("SEC filings")
+    except Exception:
+        # timeout or error — skip filings, answer from price + news
+        pass
+
+    grounded = bool(bars or news_ctx or rag_ctx)
+
+    # 5. Build the Q&A prompt — front-load ticker, demand grounding, forbid drift
+    prompt = f"""### Instruction: You are a hedge-fund research analyst answering a specific question about {ticker} ({company}).
+
+Use ONLY the context below. If the context doesn't contain the answer, say so plainly — do NOT invent specifics. Reference {ticker} explicitly. Be concise (3-6 sentences). No preamble, no disclaimers.
+
+=== CONTEXT FOR {ticker} ===
+{price_ctx}
+
+{funds_ctx}
+
+RECENT NEWS:
+{news_ctx or "(no recent news in cache)"}
+
+FILING / FUNDAMENTAL CONTEXT:
+{rag_ctx or "(no filing context retrieved)"}
+=== END CONTEXT ===
+
+### Question about {ticker}: {question}
+
+### Answer (grounded in the context above, about {ticker} only):"""
+
+    try:
+        answer = analyst.analyze(prompt)  # GPU-locked Gemma call
+        answer = (answer or "").strip()
+        # Strip any leaked prompt scaffolding / think tags
+        answer = re.sub(r'<think>.*?</think>', '', answer, flags=re.DOTALL).strip()
+        for marker in ("### Answer", "### Question", "=== END", "### Instruction"):
+            if marker in answer:
+                answer = answer.split(marker)[0].strip()
+        if not answer:
+            answer = ("I couldn't generate a grounded answer from the available "
+                      f"data for {ticker}. Try a more specific question or run a "
+                      "full analysis first.")
+    except Exception as e:
+        logger.log(f"⚠️ ask_about_ticker inference failed for {ticker}: {e}", level="ERROR")
+        answer = f"Analysis engine error: {e}"
+
+    # Drift guard — reuse the existing detector so an answer about the wrong
+    # company gets flagged rather than silently returned. Returns a reason
+    # string when drift is detected, else None.
+    try:
+        drift_reason = _check_drift_markers(answer, ticker, company)
+        if drift_reason:
+            answer = (f"⚠️ _(Low confidence — possible topic drift: {drift_reason})_\n\n{answer}")
+    except Exception:
+        pass
+
+    return {
+        "ticker": ticker,
+        "question": question,
+        "answer": answer,
+        "sources": sources,
+        "grounded": grounded,
+    }
+
 
 def analyze_single_ticker_data(ticker, pre_fetched_data=None, pre_fetched_funds=None, pre_fetched_history=None):
     """
@@ -1647,14 +2507,17 @@ def analyze_single_ticker_data(ticker, pre_fetched_data=None, pre_fetched_funds=
     Ensure the response is valid JSON only. Do not repeat the output."""
     prompt += f" ### Input: Ticker: {ticker.upper()} ({company_name}), Close: ${techs['price']} ### Response:"
     # 3. Analyze with Consensus/Single
+    # Both branches now route through analyst.analyze() (or analyst.get_consensus
+    # which calls it). The class-level EnsembleAnalyst._gemma_lock serializes
+    # all Metal/MLX inference and prevents the GPU command-buffer collision
+    # crashes that aborted the backend at market open.
     if analyst.mode == "ensemble":
         is_consensus, score, response = analyst.get_consensus(ticker, prompt)
         if not is_consensus:
             response = "{\"reasoning\": \"⚠️ ENSEMBLE WARNING: NO CONSENSUS FOUND.\", \"considerations\": [], \"metrics\": {}, \"rating\": \"HOLD\", \"score\": 50}"
     else:
-        sampler = make_sampler(temp=0.0)
-        response = generate(model, tokenizer, prompt=prompt, sampler=sampler, max_tokens=500, verbose=False)
-    
+        response = analyst.analyze(prompt)
+
     # 4. Extract and Log
     structured_data = analyst.get_structured_data(response)
     score = structured_data.get("score", 50)
@@ -1992,8 +2855,10 @@ def analyze_stock(ticker, is_auto=False):
         analysis_data = analyst.get_structured_data(response)
         reasoning = analysis_data.get("reasoning", response[:1000])
     else:
-        sampler = make_sampler(temp=0.0)
-        response = generate(model, tokenizer, prompt=prompt, sampler=sampler, max_tokens=500, verbose=False)
+        # Route through analyst.analyze() so the EnsembleAnalyst._gemma_lock
+        # serializes this with every other Gemma call site (prevents Metal
+        # command-buffer collision crashes during volatile market-open minutes).
+        response = analyst.analyze(prompt)
         analysis_data = analyst.get_structured_data(response)
         reasoning = analysis_data.get("reasoning", "")
         score = int(analysis_data.get("score", 50))

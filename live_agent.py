@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import os
 import time
+import sqlite3
 import threading
+import requests
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, time as dtime
@@ -31,7 +33,7 @@ from data_fetcher import (
     history_cache, fundamentals_cache, ai_score_cache,
     watchlist_today, live_triggers,
 )
-from scoring import calculate_technicals, get_weekly_confluence, calculate_quant_score
+from scoring import calculate_technicals, get_weekly_confluence, calculate_quant_score, calculate_sizing
 
 
 # ─── Constants ────────────────────────────────────────────────────────────────
@@ -41,6 +43,14 @@ SELL_CROSSING_THRESHOLD = 30   # score must cross DOWN through this for SELL exi
 EARNINGS_RISK_BOOST     = 10   # raise BUY threshold by this much if earnings risk
 DEFAULT_DAILY_BUY_CAP   = 5    # max BUY approvals fired per market session
 INTRADAY_BAR_HISTORY_LEN = 60  # rolling minute bars kept per ticker for volume/H/L
+
+# Score-shift detector — LOG-ONLY (intentionally NO Telegram). Records a
+# SCORE_SHIFT_UP/DOWN row in live_triggers when a ticker's live score moves
+# this many points from its session-open baseline. These rows surface in the
+# in-app Recent Activity feed for ambient awareness, but never fire a Telegram
+# ping (the user found momentum pings too noisy). One row per direction per
+# ticker per session.
+SCORE_SHIFT_DELTA       = 10
 
 # Phase 3b: anti-noise / anti-churn
 DEFAULT_HYSTERESIS_BARS        = 2     # score must stay above threshold for N bars
@@ -87,6 +97,13 @@ class TickerState:
     # Phase 3b: hysteresis counter — bars consecutively above BUY threshold
     bars_above_buy:       int = 0
     bars_below_sell:      int = 0
+    # Score-shift detector (LOG-ONLY → feed, no Telegram). baseline_score is
+    # locked on the first bar of the session; shift_fired_* dedup to one feed
+    # entry per direction per session so an oscillating ticker doesn't flood
+    # the Recent Activity feed.
+    baseline_score:       Optional[int] = None
+    shift_fired_up:       bool = False
+    shift_fired_down:     bool = False
 
 
 # ─── LiveAgent ────────────────────────────────────────────────────────────────
@@ -160,7 +177,251 @@ class LiveAgent:
         self.started_at = datetime.now()
         msg = f"🟢 LiveAgent started — subscribed to {len(tickers)} tickers ({sum(1 for s in self.state.values() if s.is_held_position)} held)."
         self.logger.log(msg)
+
+        # Send the morning BUY digest to Telegram. The live agent fires
+        # crossings only (transitions from below→above 65), so tickers that
+        # were already BUY-rated at session start would otherwise be invisible
+        # until they dip and re-cross. This one-shot digest gives the user
+        # immediate visibility into today's actionable candidates.
+        try:
+            self._send_session_open_digest()
+        except Exception as e:
+            self.logger.log(f"⚠️ Session-open digest send failed: {e}", level="WARNING")
+
+        # Per-ticker "Refresh BUY" Telegram messages — one detailed message
+        # per BUY watchlist ticker, with ATR-sized SL/TP/shares. Lets the user
+        # act on each individually via Quick Trade. Idempotent per-ticker per
+        # day (separate sentinel from __digest__).
+        try:
+            self._send_refresh_buy_alerts()
+        except Exception as e:
+            self.logger.log(f"⚠️ Refresh-BUY alerts send failed: {e}", level="WARNING")
+
         return msg
+
+    def _send_session_open_digest(self) -> None:
+        """
+        One-shot Telegram message at agent start listing today's BUY watchlist.
+        Idempotent per-session: we mark a flag so a backend crash + restart
+        doesn't spam the user with a fresh digest mid-session.
+        """
+        # Only send once per UTC day. live_triggers table is our durable marker.
+        try:
+            with sqlite3.connect(live_triggers.db_path) as conn:
+                # Use a sentinel ticker '__digest__' to mark "already sent today"
+                today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+                row = conn.execute(
+                    "SELECT 1 FROM live_triggers WHERE ticker='__digest__' AND ts > ? LIMIT 1",
+                    (today_start,),
+                ).fetchone()
+                if row:
+                    self.logger.log("  Session-open digest already sent today — skipping.")
+                    return
+        except Exception:
+            pass  # If the check fails, send anyway — duplicate is better than missed.
+
+        rows = watchlist_today.get_all()
+        buys = [r for r in rows if r["recommendation"] == "BUY"]
+        if not buys:
+            return
+
+        lines = [f"🎯 *NuroQ — Today's BUY watchlist* ({len(buys)})"]
+        lines.append("_From this morning's research cycle. LiveAgent will ping again only on threshold crossings during the session._\n")
+        lines.append("```")
+        lines.append(f"{'TICK':<6} {'Q':>3} {'AI':>3}  {'Price':>8}  Δ%")
+        for r in buys[:20]:
+            chg = float(r.get("change_pct") or 0)
+            chg_str = f"{'+' if chg >= 0 else ''}{chg:.1f}%"
+            lines.append(f"{r['ticker']:<6} {r.get('quant_score') or 0:>3} "
+                         f"{r.get('ai_score') or 0:>3}  ${float(r['price']):>7.2f}  {chg_str}")
+        lines.append("```")
+        msg_text = "\n".join(lines)
+
+        # Use the fire_buy_callback's underlying Telegram channel — but those
+        # are tied to specific orders. Cleaner: hit the Telegram HTTP API
+        # directly. The token + chat live in .env.
+        token = os.getenv("TELEGRAM_TOKEN")
+        chat = os.getenv("TELEGRAM_CHAT_ID")
+        if not token or not chat:
+            self.logger.log("  TELEGRAM_TOKEN/CHAT_ID missing — digest not sent.", level="WARNING")
+            return
+
+        try:
+            r = requests.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={"chat_id": chat, "text": msg_text, "parse_mode": "Markdown"},
+                timeout=10,
+            )
+            if r.status_code == 200:
+                self.logger.log(f"  📱 Telegram digest sent ({len(buys)} BUYs).")
+                # Mark sent for today
+                try:
+                    with sqlite3.connect(live_triggers.db_path) as conn:
+                        conn.execute(
+                            "INSERT INTO live_triggers (ts, ticker, direction, "
+                            "score_before, score_after, price, action, notes) "
+                            "VALUES (?, '__digest__', 'INFO', NULL, NULL, NULL, "
+                            "'SESSION_OPEN_DIGEST', ?)",
+                            (datetime.now().timestamp(), f"sent {len(buys)} BUYs"),
+                        )
+                except Exception as e:
+                    self.logger.log(f"  ⚠️ Digest sentinel write failed: {e}", level="WARNING")
+            else:
+                self.logger.log(f"  ⚠️ Telegram digest send failed: HTTP {r.status_code}", level="WARNING")
+        except Exception as e:
+            self.logger.log(f"  ⚠️ Telegram digest exception: {e}", level="WARNING")
+
+    def _send_refresh_buy_alerts(self) -> None:
+        """
+        One Telegram message per BUY watchlist ticker at session start, with
+        ATR-sized SL/TP/shares. Lets the user act on each BUY individually
+        even though it's not a fresh crossing.
+
+        Idempotent per ticker per day via the live_triggers table — a backend
+        restart mid-session won't re-spam these.
+
+        Cost: ~8 Telegram messages on a typical morning (one per BUY).
+        Skipped if the agent's idempotency sentinel for this ticker already
+        exists for today.
+
+        Capped at REFRESH_BUY_MAX_TICKERS (default 12) to prevent a runaway
+        scenario where the research cycle produces 50+ BUYs.
+        """
+        token = os.getenv("TELEGRAM_TOKEN")
+        chat = os.getenv("TELEGRAM_CHAT_ID")
+        if not token or not chat:
+            self.logger.log("  TELEGRAM_TOKEN/CHAT_ID missing — refresh-BUY alerts skipped.",
+                            level="WARNING")
+            return
+
+        rows = watchlist_today.get_all()
+        buys = [r for r in rows if r["recommendation"] == "BUY"]
+        if not buys:
+            return
+
+        cap = int(os.getenv("REFRESH_BUY_MAX_TICKERS", "12"))
+        buys = buys[:cap]
+
+        # Account equity for sizing — defer to dashboard's _live_equity helper
+        # so we use the same sizing math as Quick Trade / live agent fires.
+        try:
+            from dashboard import _live_equity
+            account_equity = _live_equity()
+        except Exception:
+            account_equity = 100_000.0  # safe fallback
+
+        today_start = datetime.now().replace(
+            hour=0, minute=0, second=0, microsecond=0
+        ).timestamp()
+
+        sent = 0
+        skipped = 0
+        for r in buys:
+            ticker = r["ticker"].upper()
+
+            # Per-ticker idempotency check
+            try:
+                with sqlite3.connect(live_triggers.db_path) as conn:
+                    existing = conn.execute(
+                        "SELECT 1 FROM live_triggers WHERE ticker=? AND action=? "
+                        "AND ts > ? LIMIT 1",
+                        (ticker, "REFRESH_BUY", today_start),
+                    ).fetchone()
+                    if existing:
+                        skipped += 1
+                        continue
+            except Exception:
+                pass  # better to dup than miss
+
+            # Compute sizing
+            bars = history_cache.get(ticker, allow_stale=True) or []
+            price = float(r.get("price") or 0)
+            if bars:
+                last_close = float(bars[-1].get("c") or price)
+                if last_close > 0:
+                    price = last_close
+            if price <= 0:
+                continue
+
+            techs = calculate_technicals(bars) if bars else {}
+            atr = float((techs or {}).get("atr") or max(price * 0.02, 0.5))
+            try:
+                sizing = calculate_sizing(price, atr=atr, account=account_equity)
+            except Exception:
+                continue
+
+            shares = int(sizing.get("shares", 0))
+            sl = float(sizing.get("sl", 0))
+            tp = float(sizing.get("tp", 0))
+            if shares < 1:
+                continue
+
+            cost = shares * price
+            risk = (price - sl) * shares if sl > 0 and sl < price else 0
+            reward = (tp - price) * shares if tp > price else 0
+            rr = (reward / risk) if risk > 0 else 0
+
+            chg = float(r.get("change_pct") or 0)
+            chg_str = f"{'+' if chg >= 0 else ''}{chg:.2f}%"
+            qs = r.get("quant_score") or 0
+            ai = r.get("ai_score") or 0
+
+            msg_text = (
+                f"🟢 *BUY READY · {ticker}*\n\n"
+                f"`{ticker}` — Quant *{qs}* · AI *{ai}* · Rating *BUY*\n"
+                f"Price *${price:.2f}* ({chg_str} intraday)\n\n"
+                f"📋 *Suggested order* (ATR-sized, MARKET bracket)\n"
+                f"Shares: *{shares:,}*    Cost: *${cost:,.0f}*\n"
+                f"SL: *${sl:.2f}*    TP: *${tp:.2f}*    ATR: *${atr:.2f}*\n"
+                f"Risk: *-${risk:,.0f}*    Reward: *+${reward:,.0f}*    "
+                f"R\\:R *1:{rr:.1f}*\n\n"
+                f"_Tap ✅ EXECUTE to submit this exact bracket order. "
+                f"Want different size or LIMIT entry? Open NuroQ → Watchlist → ⚡ instead._"
+            )
+
+            # Inline keyboard: EXECUTE submits the MARKET bracket immediately;
+            # Dismiss just closes the prompt. Callback data format
+            # `REFEX:TICKER:SHARES:SL:TP` parsed by TradeGatekeeper.handle_callback.
+            # Telegram caps callback_data at 64 bytes — our format stays well under.
+            reply_markup = {
+                "inline_keyboard": [[
+                    {"text": "✅ EXECUTE", "callback_data": f"REFEX:{ticker}:{shares}:{sl:.2f}:{tp:.2f}"},
+                    {"text": "⏭️ Dismiss",  "callback_data": f"REFDISMISS:{ticker}"},
+                ]],
+            }
+
+            try:
+                resp = requests.post(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    json={
+                        "chat_id": chat, "text": msg_text, "parse_mode": "Markdown",
+                        "reply_markup": reply_markup,
+                    },
+                    timeout=10,
+                )
+                if resp.status_code == 200:
+                    sent += 1
+                    # Write idempotency sentinel
+                    try:
+                        with sqlite3.connect(live_triggers.db_path) as conn:
+                            conn.execute(
+                                "INSERT INTO live_triggers (ts, ticker, direction, "
+                                "score_before, score_after, price, action, notes) "
+                                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                                (datetime.now().timestamp(), ticker, "BUY",
+                                 None, None, price, "REFRESH_BUY",
+                                 f"{shares} sh @ ${price:.2f}, SL ${sl}, TP ${tp}"),
+                            )
+                    except Exception as e:
+                        self.logger.log(f"  ⚠️ Refresh-BUY sentinel write failed for {ticker}: {e}",
+                                        level="WARNING")
+                else:
+                    self.logger.log(f"  ⚠️ Refresh-BUY send failed for {ticker}: HTTP {resp.status_code}",
+                                    level="WARNING")
+            except Exception as e:
+                self.logger.log(f"  ⚠️ Refresh-BUY exception for {ticker}: {e}", level="WARNING")
+
+        self.logger.log(f"  📱 Refresh-BUY alerts: {sent} sent, {skipped} skipped (already sent today).")
 
     def stop(self) -> str:
         if not self.is_running:
@@ -229,6 +490,13 @@ class LiveAgent:
             new_score = self._recompute_score(state)
             if new_score is None:
                 return
+
+            # Lock baseline on first bar; thereafter log score shifts to the
+            # in-app feed (no Telegram).
+            if state.baseline_score is None:
+                state.baseline_score = new_score
+            else:
+                self._check_score_shift(state, new_score)
 
             self._check_crossings(state, new_score)
             state.last_score = new_score
@@ -338,6 +606,45 @@ class LiveAgent:
             return False
         return True
 
+    def _check_score_shift(self, state: TickerState, new_score: int) -> None:
+        """
+        LOG-ONLY score-shift detector. Writes a SCORE_SHIFT_UP / SCORE_SHIFT_DOWN
+        row to live_triggers when the live score has drifted SCORE_SHIFT_DELTA
+        points from the session-open baseline. Surfaces in the in-app Recent
+        Activity feed for ambient awareness. Deliberately NO Telegram (momentum
+        pings were too noisy). One row per direction per ticker per session.
+        """
+        baseline = state.baseline_score
+        if baseline is None:
+            return
+        delta = new_score - baseline
+        if abs(delta) < SCORE_SHIFT_DELTA:
+            return
+        direction = "UP" if delta > 0 else "DOWN"
+        if direction == "UP" and state.shift_fired_up:
+            return
+        if direction == "DOWN" and state.shift_fired_down:
+            return
+
+        action_tag = "SCORE_SHIFT_UP" if direction == "UP" else "SCORE_SHIFT_DOWN"
+        try:
+            live_triggers.log(
+                state.ticker, direction, baseline, new_score,
+                state.last_price or 0,
+                action=action_tag,
+                notes=f"score {baseline}→{new_score} ({'+' if delta >= 0 else ''}{delta}) — feed only",
+            )
+            self.logger.log(
+                f"📊 Score shift {state.ticker}: {baseline}→{new_score} "
+                f"({direction}) — logged to feed (no Telegram)."
+            )
+        except Exception as e:
+            self.logger.log(f"⚠️ Score-shift log failed for {state.ticker}: {e}", level="WARNING")
+
+        if direction == "UP":
+            state.shift_fired_up = True
+        else:
+            state.shift_fired_down = True
 
     def _handle_buy_crossing(self, state: TickerState, prev: int, new: int) -> None:
         ticker = state.ticker
@@ -363,6 +670,53 @@ class LiveAgent:
                 notes="Already held — no duplicate BUY.",
             )
             return
+
+        # Wash-sale guard (IRS Section 1091 — Layer 1). If we sold this ticker
+        # at a loss within the last 30 days, the loss would be disallowed.
+        # Suppress automatic re-entry. User can still manually override via the
+        # Telegram approval message's override button (which routes through
+        # handle_quick_trade with wash_sale_override=True).
+        try:
+            from dashboard import wash_sale_check
+            ws = wash_sale_check(ticker)
+            if ws["risk"]:
+                live_triggers.log(
+                    ticker, "BUY", prev, new, state.last_price or 0,
+                    action="SUPPRESSED_WASH_SALE",
+                    notes=ws["hint"][:400],
+                )
+                self.logger.log(
+                    f"🛑 LiveAgent: BUY crossing for {ticker} suppressed — wash-sale risk: "
+                    f"{ws['hint'][:200]}", level="WARNING",
+                )
+                # Send a one-shot informational Telegram so the user knows the
+                # agent saw the signal but held back. They can manually override
+                # via Watchlist ⚡ if they want to.
+                try:
+                    token = os.getenv("TELEGRAM_TOKEN")
+                    chat = os.getenv("TELEGRAM_CHAT_ID")
+                    if token and chat:
+                        requests.post(
+                            f"https://api.telegram.org/bot{token}/sendMessage",
+                            json={
+                                "chat_id": chat,
+                                "text": (f"🛑 *Wash-sale block · {ticker}*\n\n"
+                                         f"Live agent detected a BUY crossing "
+                                         f"({prev}→{new}) but suppressed it.\n\n"
+                                         f"{ws['hint']}\n\n"
+                                         f"_Override via NuroQ → Watchlist → ⚡ "
+                                         f"with wash-sale acknowledgment if you want "
+                                         f"the entry anyway._"),
+                                "parse_mode": "Markdown",
+                            },
+                            timeout=5,
+                        )
+                except Exception:
+                    pass
+                return
+        except Exception as e:
+            self.logger.log(f"⚠️ Wash-sale check for {ticker} failed (failing open): {e}",
+                            level="WARNING")
 
         # Phase 4: News final-check. Read from news_cache (no API call — hot
         # path safe). NEGATIVE_BLOCK suppresses entirely; WARNING/BOOST

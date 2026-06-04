@@ -185,17 +185,58 @@ def main() -> int:
             print(f"[premarket_refresh] ⚠️ Price refresh failed: {e}", file=sys.stderr)
 
     # ─── News refresh ───────────────────────────────────────────────────────
+    #
+    # Why we DON'T fetch news for all 150 watchlist tickers:
+    #   Polygon's /v2/reference/news is per-ticker, no bulk endpoint exists.
+    #   With our rate limiter at ~1 req/min (current observed throughput),
+    #   150 tickers = 150 minutes. That would push past market open (08:30 CT
+    #   for the 08:00 CT job) and leave the live agent with stale prices for
+    #   the most volatile minutes of the day.
+    #
+    # What we do instead:
+    #   Only fetch news for the actionable subset — today's BUY candidates +
+    #   currently-held positions. These are the names the user might trade
+    #   on. The HOLDs (and the long tail of borderline tickers) get caught
+    #   by the always-on NewsPoller background service which runs every 30
+    #   min throughout the day at its own pace.
+    #
+    # Net effect: ~150 news calls → ~30. Premarket finishes in ~5-7 min
+    # instead of 80+. Live agent has fresh prices well before market open.
     n_news = 0
     if not args.price_only:
         try:
-            n_news = refresh_watchlist_news(tickers, logger=dashboard.logger)
+            # Build the actionable subset
+            actionable = set()
+            for row in dashboard.watchlist_today.get_all():
+                if row.get("recommendation") == "BUY":
+                    actionable.add(row["ticker"].upper())
+            # + held positions (need fresh news for risk management)
+            try:
+                df = dashboard.portfolio_mgr.get_portfolio()
+                if not df.empty:
+                    for t in df["Ticker"].tolist():
+                        actionable.add(str(t).upper())
+            except Exception:
+                pass
+
+            # Honor MAX_PREMARKET_NEWS_TICKERS env var (default 30 — cheap +
+            # well below most Polygon tier limits even with our slow rate).
+            cap = int(os.getenv("MAX_PREMARKET_NEWS_TICKERS", "30"))
+            news_tickers = list(actionable)[:cap]
+
+            if news_tickers:
+                print(f"[premarket_refresh] News scope: {len(news_tickers)} "
+                      f"actionable tickers (BUYs + held), cap={cap}. "
+                      f"Rest will be covered by always-on NewsPoller.")
+                n_news = refresh_watchlist_news(news_tickers, logger=dashboard.logger)
             print(f"[premarket_refresh] Ingested {n_news} new headlines into news_cache.")
         except Exception as e:
             print(f"[premarket_refresh] ⚠️ News refresh failed: {e}", file=sys.stderr)
 
     elapsed = (datetime.now() - started).total_seconds()
     summary = (f"✅ Pre-market refresh done in {elapsed:.0f}s: "
-               f"{n_price} prices updated, {n_news} new headlines.")
+               f"{n_price} prices updated, {n_news} new headlines from "
+               f"actionable subset (NewsPoller covers the rest).")
     print(f"[premarket_refresh] {summary}")
     notify(summary)
     return 0
