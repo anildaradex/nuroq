@@ -1,11 +1,24 @@
 # NuroQ — Capabilities & Architecture
 
 > Living reference for what this tool does, how it's wired, and where its limits are.
-> **Last updated:** 2026-05-24 (Rebuild complete: Phases 1, 2, 2.5, 3a, 3b, 4a, 4b, 5 all done. Reactive engine with reconnect + hysteresis + cooldown + news-shock LLM rescore queue + pre-market refresh + Health observability tab + Watchlist tab with BUY/HOLD grouping. Master test suite at 82 tests, all passing.)
+> **Last updated:** 2026-05-24 (evening — React + FastAPI + Capacitor iOS stack ships alongside the legacy Gradio dashboard. Gradio dashboard got a full Phase A-D density+navigation overhaul before the migration. Master test suite at 91 tests, all passing.)
 >
-> **For where this is going:** see `ARCHITECTURE.md` for the multi-phase rebuild plan (3-tier system: overnight research → premarket refresh → live reactive agent). See `SCHEDULING.md` for cron / launchd setup.
+> **For where this is going:** see `ARCHITECTURE.md` for the system design. See `FRONTEND.md` for React dev, `MOBILE.md` for iOS, `SCHEDULING.md` for cron, `HANDOFF.md` for the most recent session summary.
 >
 > **How to update:** when you ship a feature or fix that changes a user-visible workflow, a subsystem, or an honest-assessment caveat, edit the relevant section here and bump the date. Keep it terse.
+
+---
+
+## Two frontends, one backend (as of 2026-05-24)
+
+| Surface | Stack | Best for |
+|---|---|---|
+| **React web + iOS** (primary) | Vite + React 19 + TS + Tailwind + Capacitor 8 at `frontend/`, served by FastAPI at `backend/api.py` | Modern UI, mobile, App Store path |
+| **Gradio dashboard** (legacy) | `dashboard.py`, Gradio 6, port 7860 | Broadest feature coverage today |
+
+The Python compute layer (`scoring.py`, `live_agent.py`, `event_stream.py`, `data_fetcher.py`, etc.) is **unchanged** — both frontends call into the same helpers. The React migration is incremental; the Gradio dashboard remains as fallback until view-by-view migration completes.
+
+Run the React stack: `./scripts/dev.sh` (HMR) or `./scripts/prod.sh` (single-port). Run Gradio: `NUROQ_FORCE_LIVE=1 ./.venv/bin/python dashboard.py`. Install on iPhone: `./scripts/ios.sh` then Cmd+R in Xcode.
 
 ---
 
