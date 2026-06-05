@@ -677,7 +677,7 @@ class AskResp(BaseModel):
 def ask(req: AskReq):
     """
     Free-form 'AI mode' Q&A about a ticker (the search bar under the chart).
-    Grounds Gemma with price action + news + SEC-filing RAG + fundamentals.
+    Grounds the AI with price action + news + SEC-filing RAG + fundamentals.
     Runs LLM inference — allow several seconds.
     """
     if not req.ticker.strip():
@@ -812,7 +812,7 @@ def trade_setup(ticker: str):
     Used by Watchlist row "Trade" buttons so the user can click a ticker
     and immediately get a reviewed, sized order without running full analysis.
 
-    Faster than /api/analyze/{ticker} (no Gemma inference). Uses cached daily
+    Faster than /api/analyze/{ticker} (no AI inference). Uses cached daily
     bars + the same calculate_sizing helper the live agent uses.
     """
     t = ticker.upper().strip()
@@ -862,7 +862,7 @@ class AnalyzeResp(BaseModel):
 @app.get("/api/analyze/{ticker}", response_model=AnalyzeResp)
 def analyze(ticker: str):
     """
-    Deep analysis: technicals + fundamentals + Gemma reasoning + trade setup
+    Deep analysis: technicals + fundamentals + AI reasoning + trade setup
     + chart data. Runs the full LLM inference, so allow 3-5 seconds.
     """
     ticker = ticker.upper().strip()

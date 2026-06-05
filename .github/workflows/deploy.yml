@@ -11,10 +11,9 @@ name: Deploy to GCE
 
 on:
   push:
-    branches: [main, feat/algo-claude-improvements]
+    branches: [main]   # main = production; deploys happen on merge to main
     paths-ignore:
       - '**.md'
-      - 'frontend/**'
       - '.env.cloud.example'
   workflow_dispatch: {}
 

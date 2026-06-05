@@ -391,7 +391,7 @@ function AskBar({ ticker }: { ticker: string }) {
       {ask.isPending && (
         <div className="mt-3 flex items-center gap-2 text-xs opacity-70">
           <Loader2 className="w-3.5 h-3.5 animate-spin" />
-          Thinking… (running Gemma over {ticker}'s data)
+          Thinking… (running AI over {ticker}'s data)
         </div>
       )}
 

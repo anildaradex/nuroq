@@ -174,11 +174,11 @@ class EnsembleAnalyst:
         return response
 
     def get_consensus(self, ticker, prompt):
-        """No consensus check needed. Returns Gemma analysis directly."""
-        logger.log(f"[{ticker}] ▶ Step 5a: Running Gemma inference...")
+        """Returns the AI analysis directly (Gemma locally, Gemini in the cloud)."""
+        logger.log(f"[{ticker}] ▶ Step 5a: Running AI inference...")
         res = self.analyze(prompt, "gemma", structured=True)
         score = self.extract_score(res)
-        logger.log(f"[{ticker}]    Gemma result → score={score}")
+        logger.log(f"[{ticker}]    AI result → score={score}")
 
         rating = self.get_structured_data(res).get("rating", "HOLD")
         
@@ -192,7 +192,7 @@ class EnsembleAnalyst:
         if old_rating != rating:
             logger.log(f"[{ticker}] 🛡️ Sanity Guard: Overriding {old_rating} to {rating} (Score {score} too low/high)")
 
-        combined_reasoning = f"--- GEMMA ({score}) ---\n{res}"
+        combined_reasoning = f"--- AI ({score}) ---\n{res}"
         
         return {
             "is_consensus": True,
@@ -2541,7 +2541,7 @@ def _describe_price_action(ticker: str, bars: list) -> str:
 def ask_about_ticker(ticker: str, question: str) -> dict:
     """
     Free-form Q&A about a ticker — the 'AI mode' search bar under the chart.
-    Grounds Gemma with: recent price action, cached + live news, SEC-filing RAG
+    Grounds the AI with: recent price action, cached + live news, SEC-filing RAG
     context relevant to the question, and fundamentals. Returns a dict:
       {ticker, question, answer, sources: [..], grounded: bool}
 
