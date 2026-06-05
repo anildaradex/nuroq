@@ -1441,5 +1441,191 @@ class TestHealthSnapshot(unittest.TestCase):
         self.assertEqual(_age_traffic_light(36), "🔴")
 
 
+class TestSection475(unittest.TestCase):
+    """§475(f) mark-to-market mode neutralizes the wash-sale guard (default OFF).
+
+    Added 2026-06-03: a valid §475 election makes the wash-sale rule (§1091)
+    inapplicable. NUROQ_SECTION_475=1 short-circuits wash_sale_check so every BUY
+    gate passes, and satisfies the live-trading safety belt. The flag must NEVER
+    default on — the software cannot assume the user filed the election.
+    """
+
+    def test_helper_defaults_off(self):
+        from dashboard import section_475_active
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("NUROQ_SECTION_475", None)
+            self.assertFalse(section_475_active())
+        with patch.dict(os.environ, {"NUROQ_SECTION_475": "1"}):
+            self.assertTrue(section_475_active())
+        with patch.dict(os.environ, {"NUROQ_SECTION_475": "0"}):
+            self.assertFalse(section_475_active())
+
+    def test_wash_sale_check_short_circuits_when_elected(self):
+        """With §475 on, wash_sale_check returns risk=False BEFORE any Alpaca
+        call — so even a would-be loss re-entry is unflagged."""
+        with patch.dict(os.environ, {"NUROQ_SECTION_475": "1"}):
+            # Patch get_recent_fills to blow up: if it's called, the short-circuit
+            # failed to return early. It must NOT be reached.
+            with patch.object(dashboard.alpaca_api, "get_recent_fills",
+                              side_effect=AssertionError("Alpaca reached despite §475")):
+                res = dashboard.wash_sale_check("SAN", force_refresh=True)
+        self.assertFalse(res["risk"])
+        self.assertTrue(res.get("section_475"))
+        self.assertIn("475", res["hint"])
+
+    def test_wash_sale_guard_still_active_when_off(self):
+        """With §475 off, a loss re-entry is still flagged risk=True (regression
+        guard — the neutralizer must not leak into the default path)."""
+        now = time.time()
+        fake_fills = [
+            {"side": "BUY",  "qty": 100, "fill_price": 13.00, "filled_at_ts": now - 5 * 86400},
+            {"side": "SELL", "qty": 100, "fill_price": 12.50, "filled_at_ts": now - 2 * 86400},
+        ]
+        with patch.dict(os.environ, {"NUROQ_SECTION_475": "0"}):
+            with patch.object(dashboard.alpaca_api, "get_recent_fills", return_value=fake_fills):
+                res = dashboard.wash_sale_check("SAN", force_refresh=True)
+        self.assertTrue(res["risk"])
+        self.assertTrue(res["likely_loss_sells"])
+
+    @patch('alpaca_executor.TradingClient')
+    def test_section_475_satisfies_live_trading_safety_belt(self, mock_client_class):
+        """NUROQ_SECTION_475=1 alone (no NUROQ_WASH_SALE_AWARE) must allow live
+        trading to connect, instead of raising the wash-sale-aware RuntimeError."""
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        with patch.dict(os.environ, {
+            "ALPACA_API_KEY": "test", "ALPACA_SECRET_KEY": "test",
+            "NUROQ_LIVE_TRADING": "1", "NUROQ_SECTION_475": "1",
+            "NUROQ_WASH_SALE_AWARE": "0",
+        }):
+            from alpaca_executor import LiveAlpacaExecutor
+            try:
+                LiveAlpacaExecutor()  # must not raise the safety-belt RuntimeError
+            except RuntimeError as e:
+                self.fail(f"§475 should satisfy the safety belt, but it raised: {e}")
+        # Live client constructed with paper=False
+        _, kwargs = mock_client_class.call_args
+        self.assertEqual(kwargs.get("paper"), False)
+
+    def test_live_trading_belt_still_blocks_without_ack(self):
+        """Neither ack set → live trading must still hard-fail (belt intact)."""
+        with patch.dict(os.environ, {
+            "ALPACA_API_KEY": "test", "ALPACA_SECRET_KEY": "test",
+            "NUROQ_LIVE_TRADING": "1", "NUROQ_SECTION_475": "0",
+            "NUROQ_WASH_SALE_AWARE": "0",
+        }):
+            from alpaca_executor import LiveAlpacaExecutor
+            with self.assertRaises(RuntimeError):
+                LiveAlpacaExecutor()
+
+
+class TestSellProposals(unittest.TestCase):
+    """Option B: the core quant layer proactively PROPOSES sells on held
+    positions — tax-loss harvest (§475-gated), rotate, or exit-weak.
+    Added 2026-06-03. propose_sells() is pure; we mock Alpaca + watchlist.
+    """
+
+    def _pos(self, symbol, qty, avg, cur):
+        pl = (cur - avg) * qty
+        plpc = (cur - avg) / avg if avg else 0.0
+        return {"symbol": symbol, "qty": float(qty), "avg_entry_price": float(avg),
+                "current_price": float(cur), "market_value": cur * qty,
+                "cost_basis": avg * qty, "unrealized_pl": pl, "unrealized_plpc": plpc}
+
+    def _wl(self, rows):
+        # rows: list of (ticker, quant_score, recommendation)
+        return [{"ticker": t, "quant_score": s, "recommendation": rec,
+                 "ai_score": s, "price": 100.0, "rank": i}
+                for i, (t, s, rec) in enumerate(rows)]
+
+    def test_harvest_suppressed_without_475(self):
+        """A loser must NOT generate a harvest proposal when §475 is OFF."""
+        positions = [self._pos("SAN", 100, 13.0, 12.0)]  # -7.7%
+        with patch.dict(os.environ, {"NUROQ_SECTION_475": "0"}), \
+             patch.object(dashboard.alpaca_api, "list_positions", return_value=positions), \
+             patch.object(dashboard.watchlist_today, "get_all",
+                          return_value=self._wl([("SAN", 70, "HOLD")])):
+            props = dashboard.propose_sells()
+        self.assertFalse(any(p["kind"] == "TAX_LOSS_HARVEST" for p in props))
+
+    def test_harvest_proposed_under_475(self):
+        """Same loser DOES generate a harvest proposal when §475 is ON."""
+        positions = [self._pos("SAN", 100, 13.0, 12.0)]
+        with patch.dict(os.environ, {"NUROQ_SECTION_475": "1"}), \
+             patch.object(dashboard.alpaca_api, "list_positions", return_value=positions), \
+             patch.object(dashboard.watchlist_today, "get_all",
+                          return_value=self._wl([("SAN", 50, "HOLD")])):
+            props = dashboard.propose_sells()
+        harvest = [p for p in props if p["kind"] == "TAX_LOSS_HARVEST"]
+        self.assertEqual(len(harvest), 1)
+        self.assertEqual(harvest[0]["ticker"], "SAN")
+        self.assertTrue(harvest[0]["section_475"])
+        self.assertIn("475", harvest[0]["reason"])
+
+    def test_strong_loser_not_harvested(self):
+        """A red position that still scores strongly (≥ ceiling) is NOT harvested
+        even under §475 — don't dump conviction for a tax nicety."""
+        positions = [self._pos("NVDA", 10, 130.0, 125.0)]  # red but strong
+        with patch.dict(os.environ, {"NUROQ_SECTION_475": "1"}), \
+             patch.object(dashboard.alpaca_api, "list_positions", return_value=positions), \
+             patch.object(dashboard.watchlist_today, "get_all",
+                          return_value=self._wl([("NVDA", 80, "BUY")])):
+            props = dashboard.propose_sells()
+        self.assertEqual(props, [])
+
+    def test_rotate_when_stronger_candidate_exists(self):
+        """Weak holding + a much higher-scoring non-held BUY → ROTATE."""
+        positions = [self._pos("MU", 50, 90.0, 92.0)]  # small gain, weak score
+        wl = self._wl([("MU", 40, "HOLD"), ("AVGO", 78, "BUY")])
+        with patch.dict(os.environ, {"NUROQ_SECTION_475": "0"}), \
+             patch.object(dashboard.alpaca_api, "list_positions", return_value=positions), \
+             patch.object(dashboard.watchlist_today, "get_all", return_value=wl):
+            props = dashboard.propose_sells()
+        self.assertEqual(len(props), 1)
+        self.assertEqual(props[0]["kind"], "ROTATE")
+        self.assertEqual(props[0]["rotate_into"], "AVGO")
+
+    def test_exit_weak_when_no_candidate(self):
+        """Weak holding, no stronger candidate → EXIT_WEAK (not rotate)."""
+        positions = [self._pos("MU", 50, 90.0, 92.0)]
+        wl = self._wl([("MU", 40, "HOLD")])
+        with patch.dict(os.environ, {"NUROQ_SECTION_475": "0"}), \
+             patch.object(dashboard.alpaca_api, "list_positions", return_value=positions), \
+             patch.object(dashboard.watchlist_today, "get_all", return_value=wl):
+            props = dashboard.propose_sells()
+        self.assertEqual(len(props), 1)
+        self.assertEqual(props[0]["kind"], "EXIT_WEAK")
+        self.assertIsNone(props[0]["rotate_into"])
+
+    def test_healthy_position_no_proposal(self):
+        """A strong, green holding generates no proposal."""
+        positions = [self._pos("AAPL", 20, 150.0, 165.0)]
+        with patch.dict(os.environ, {"NUROQ_SECTION_475": "1"}), \
+             patch.object(dashboard.alpaca_api, "list_positions", return_value=positions), \
+             patch.object(dashboard.watchlist_today, "get_all",
+                          return_value=self._wl([("AAPL", 82, "BUY")])):
+            props = dashboard.propose_sells()
+        self.assertEqual(props, [])
+
+    def test_propose_sells_fails_closed(self):
+        """If Alpaca lookup throws, propose nothing (never raise)."""
+        with patch.object(dashboard.alpaca_api, "list_positions",
+                          side_effect=RuntimeError("alpaca down")):
+            self.assertEqual(dashboard.propose_sells(), [])
+
+    def test_log_sell_proposals_dedups(self):
+        """Second log of the same (date,ticker,kind) writes 0 new feed rows."""
+        dashboard._proposed_sell_keys.clear()
+        proposals = [{"ticker": "ZZZ", "kind": "EXIT_WEAK", "score": 40,
+                      "current_price": 10.0, "reason": "test"}]
+        with patch.object(dashboard.live_triggers, "log") as mock_log:
+            first = dashboard.log_sell_proposals(list(proposals))
+            second = dashboard.log_sell_proposals(list(proposals))
+        self.assertEqual(first, 1)
+        self.assertEqual(second, 0)
+        self.assertEqual(mock_log.call_count, 1)
+        dashboard._proposed_sell_keys.clear()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -18,6 +18,84 @@
 
 ---
 
+## Current session — Session 6 — 2026-06-03 (IN PROGRESS)
+
+**§475(f) mode + PDT-rule context (tax/regulatory):**
+- Reviewed two user claims for accuracy (web-verified): (1) **PDT rule abolished**
+  — SEC approved FINRA's proposal 2026-04-14, effective ~2026-06-04; $25k min &
+  "Pattern Day Trader" label gone, replaced by risk-based intraday margin (Rule
+  4210, $2k margin min), 18-mo broker phase-in to ~Oct 2027. NuroQ had NO PDT
+  logic, so nothing to remove. (2) **§475(f) MTM election** makes wash-sale
+  (§1091) + $3k cap-loss limit inapplicable (ordinary gains/losses, Form 4797) —
+  it's an election statement + Form 3115, NOT a "Form 475." **2026 window CLOSED
+  for existing individuals** (was due Apr 15, 2026); open for a new entity (~75-day
+  Rev. Proc. 99-17) or 2027 (Apr 15, 2027).
+- **Implemented `NUROQ_SECTION_475` flag (default OFF).** Built on the agreed
+  basis: ready for a future entity / 2027 election, never assumes the election.
+  - `dashboard.section_475_active()` helper (reads env live; no restart needed).
+  - `wash_sale_check()` short-circuits at the top when the flag is on → returns
+    `risk=False` + explanatory hint BEFORE any Alpaca call or cache write. Single
+    chokepoint neutralizes ALL three BUY gates (live_agent, handle_quick_trade,
+    iOS OrderReviewModal) since they all key off `risk`. Not cached → toggling is
+    instant.
+  - `alpaca_executor._connect` safety belt now accepts `NUROQ_SECTION_475=1` OR
+    `NUROQ_WASH_SALE_AWARE=1` to satisfy the live-trading wash-sale acknowledgment.
+- **Tests: 91 → 96** (`TestSection475`): helper default-off, short-circuit
+  returns-before-Alpaca, default-path guard still flags loss re-entry (regression),
+  §475 satisfies the live belt, belt still blocks with neither ack. `master_test_suite.py` green (4.2s).
+- **Key principle reaffirmed:** the wash-sale code is *advisory only* — removing/
+  disabling it does NOT change real tax treatment (set by the filed election +
+  1099-B), and NuroQ is still paper-only (no live taxable trades today).
+
+**Option B — core quant layer now PROPOSES sells (shipped):**
+- `dashboard.propose_sells()` — PURE, fails-closed. Deliberate pass over held
+  Alpaca positions (via `list_positions`) × current watchlist scores → ranked
+  proposals of three kinds:
+  - **TAX_LOSS_HARVEST** — §475-GATED (suppressed unless `NUROQ_SECTION_475=1`,
+    since otherwise it's a wash-sale trap). Material paper loss (≥2%) on a
+    non-strong holding (score < 55 or off-list) → realize the now-deductible loss;
+    re-entry unrestricted under §475.
+  - **ROTATE** — weak holding (score ≤ 45) + a non-held BUY candidate out-scoring
+    it by ≥20 → rotate capital into the stronger name (different ticker = never a
+    wash sale; PDT-free = same-session fine).
+  - **EXIT_WEAK** — weak holding, no stronger candidate → trim/close.
+  Tunables: `SELL_PROPOSE_WEAK_SCORE=45`, `HARVEST_SCORE_CEILING=55`,
+  `HARVEST_MIN_LOSS_PCT=0.02`, `ROTATE_SCORE_EDGE=20`.
+- `dashboard.log_sell_proposals()` — writes PROPOSE_SELL rows to live_triggers
+  (auto-surface in the React Recent Activity feed); deduped per (date,ticker,kind).
+- Surfaced 3 ways: **Next Actions** card (`render_next_actions`, top 4),
+  **`GET /api/propose-sells`** (new backend endpoint, returns proposals + §475
+  flag), and the **premarket cron** (`premarket_refresh.main` now calls
+  `log_sell_proposals()` each morning → daily feed entries).
+- ADVISORY ONLY — nothing auto-executes; user acts via Watchlist ⚡ / Telegram /
+  close_position. Verified live: ran against the real paper account → coherent
+  ROTATE proposals (SPY/AAPL scores decayed below the live SELL threshold).
+- Tests 96 → **104** (`TestSellProposals`): harvest suppressed w/o §475, harvest
+  under §475, strong-loser-not-harvested, rotate vs exit-weak, healthy=none,
+  fails-closed, dedup. Suite green (~4.2s).
+
+✅ **Backend started 2026-06-03 23:38, now serving new code.** `/api/propose-sells`
+→ 200 with live ROTATE proposals (SPY/AAPL/MU scores decayed to 15-25). LiveAgent
+autostarted (154 tickers, 9 held), Telegram digest sent.
+⚠️ Started MANUALLY (`uv run uvicorn backend.api:app`), NOT via launchd — the
+`com.nuroq.backend` job fails with **exit 78 / TCC** (no logs on kickstart). Manual
+process won't survive reboot. Fix: re-grant Full Disk Access to `/opt/homebrew/bin/uv`
++ `/bin/sh`, then `launchctl kickstart -k gui/$(id -u)/com.nuroq.backend`.
+
+**Stated north-star (recorded):** evolve NuroQ into a fully autonomous live-trading
+app — places autotrades without intervention, backtests, measures its own efficacy,
+learns from mistakes, self-improves. Build every feature toward that trajectory.
+
+**Open / next-session candidates:**
+- Restart the backend to serve `/api/propose-sells`; build the React UI for sell
+  proposals (feed already shows PROPOSE_SELL rows; a dedicated card w/ SELL buttons
+  would close the loop).
+- Option C: first-class Investor vs Trader-§475 regime surfaced in the UI.
+- Tune proposer thresholds against real watchlist behavior (initial live run
+  flagged several ROTATEs — confirm the score-decay band feels right).
+
+---
+
 ## Session 5 — 2026-05-31 → 2026-06-01 (COMPLETE)
 
 **AI & analysis**

@@ -672,6 +672,41 @@ def wash_sale(ticker: str):
     )
 
 
+# ─── Quant sell proposals (Option B: the quant layer proposing SALES) ────────
+
+class SellProposal(BaseModel):
+    ticker: str
+    kind: str                       # TAX_LOSS_HARVEST | ROTATE | EXIT_WEAK
+    shares: float
+    current_price: float
+    avg_cost: float
+    unrealized_pl: float
+    unrealized_pl_pct: float
+    score: Optional[int] = None
+    rotate_into: Optional[str] = None
+    section_475: bool = False
+    reason: str
+
+
+class ProposeSellsResp(BaseModel):
+    section_475: bool
+    proposals: list[SellProposal]
+
+
+@app.get("/api/propose-sells", response_model=ProposeSellsResp)
+def propose_sells():
+    """
+    Deliberate quant pass over held positions → ranked SELL proposals
+    (tax-loss harvest under §475, rotate into a stronger name, or exit a
+    decayed holding). Advisory only — the UI acts via the normal SELL paths.
+    """
+    proposals = dash.propose_sells()
+    return ProposeSellsResp(
+        section_475=dash.section_475_active(),
+        proposals=[SellProposal(**p) for p in proposals],
+    )
+
+
 # ─── Trade setup (sized order ready to review + submit) ──────────────────────
 
 class TradeSetupResp(BaseModel):
