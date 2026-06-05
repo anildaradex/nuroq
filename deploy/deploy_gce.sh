@@ -57,6 +57,7 @@ GEMINI_AUTH="${GEMINI_AUTH:-vertex}"
 SECRET_KEYS=(POLYGON_API_KEY ALPACA_API_KEY ALPACA_SECRET_KEY \
              TELEGRAM_TOKEN TELEGRAM_CHAT_ID NUROQ_API_KEY)
 [ "$GEMINI_AUTH" = "apikey" ] && SECRET_KEYS+=(GEMINI_API_KEY)
+# CLOUDFLARED_TOKEN is added to SECRET_KEYS after .env is sourced (below).
 
 echo "▶ Project=$PROJECT_ID region=$REGION zone=$ZONE image=$IMAGE"
 [ -f "$ENV_FILE" ] || { echo "❌ $ENV_FILE not found"; exit 1; }
@@ -87,6 +88,12 @@ echo "▶ Syncing secrets from $ENV_FILE → Secret Manager…"
 set +x
 # shellcheck disable=SC1090
 set -a; source "$ENV_FILE"; set +a
+# Named Cloudflare tunnel token — from .env or the environment; if absent, fall
+# back to an existing Secret Manager version so redeploys keep the named tunnel.
+if [ -z "${CLOUDFLARED_TOKEN:-}" ]; then
+  CLOUDFLARED_TOKEN=$(gcloud secrets versions access latest --secret=CLOUDFLARED_TOKEN 2>/dev/null || true)
+fi
+[ -n "${CLOUDFLARED_TOKEN:-}" ] && export CLOUDFLARED_TOKEN && SECRET_KEYS+=(CLOUDFLARED_TOKEN)
 # API auth key (gates every request). Resolve in priority order so it stays
 # STABLE across re-runs (regenerating it each deploy would break your clients):
 #   1) value in $ENV_FILE  2) existing Secret Manager version  3) generate once.
