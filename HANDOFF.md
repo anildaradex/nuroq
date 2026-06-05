@@ -32,8 +32,9 @@ service account — no API key). Secrets in Secret Manager; SQLite on host-path
 - Deploy gotchas already fixed in the script: cloudbuild.yaml (custom Dockerfile path), e2-medium (e2-small OOMs torch), host-path mount (separate-disk fsck race), compute-SA roles (artifactregistry.reader + aiplatform.user), stable API key.
 - ✅ Vertex inference smoke-tested (`/api/analyze/NVDA` → real Gemini analysis).
 - ✅ Cron ported: `scheduler.py` in-process scheduler (`NUROQ_INPROC_SCHEDULER=1`) runs research @ 03:30 ET + sell-proposals @ 08:00 ET weekdays; `/health` reports it. Deploy uses unique image tags so `update-container` re-pulls (stable IP + /data).
-- **⚠️ FOLLOW-UP — Gemini score parsing:** Gemini's output format differs from DPO-Gemma's, so `get_structured_data` defaults `ai_score` to 50 (quant unaffected). Tune the prompt/parser in `dashboard.py` so the AI tiebreaker actually contributes. This is the top open item.
-- **NOT done:** Gemini parser fix (above); HTTPS front (Caddy/CF Tunnel) before live; frontend VITE_API_BASE + iOS re-point. Live trading still OFF.
+- ✅ Gemini score parsing FIXED: scoring path uses Gemini structured output (JSON schema, 2048 tok); `structured` flag threaded through `analyst.analyze()` (Ask-AI stays free-text). Tests 110.
+- ✅ CI/CD: `.github/workflows/deploy.yml` auto-deploys on push via Workload Identity Federation (no stored key). SA `gh-deployer`, WIF pool `github-pool`. See deploy/README.md.
+- **NOT done:** confirm first Actions run is green; HTTPS front (Caddy/CF Tunnel) before live; frontend VITE_API_BASE + iOS re-point. Live trading still OFF.
 
 ---
 

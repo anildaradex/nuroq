@@ -25,6 +25,21 @@ from __future__ import annotations
 import os
 import threading
 
+# JSON schema for the SCORING path. Forcing structured output guarantees Gemini
+# returns complete, parseable JSON with a `score` (its verbose free-text replies
+# were truncating the JSON before the score key, so get_structured_data defaulted
+# to 50). NOT applied to the Ask-AI path, which wants free-form prose.
+_ANALYSIS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "score":          {"type": "integer"},
+        "rating":         {"type": "string", "enum": ["BUY", "HOLD", "SELL"]},
+        "reasoning":      {"type": "string"},
+        "considerations": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["score", "rating", "reasoning"],
+}
+
 
 class GeminiBackend:
     """Google Gemini via the unified `google-genai` SDK.
@@ -76,17 +91,27 @@ class GeminiBackend:
     def describe(self) -> str:
         return f"{self.model} ({self._auth})"
 
-    def generate(self, prompt: str) -> str:
+    def generate(self, prompt: str, structured: bool = False) -> str:
+        """Generate text. `structured=True` (the scoring path) constrains output
+        to the analysis JSON schema so the score/rating always parse; the Ask-AI
+        path leaves it False for free-form prose."""
         from google.genai import types
+
+        cfg_kwargs = dict(
+            temperature=0.0,
+            # Scoring JSON needs headroom so a long reasoning field doesn't push
+            # the score key past the limit; free-text answers also get a bump.
+            max_output_tokens=2048 if structured else max(self.max_output_tokens, 1024),
+        )
+        if structured:
+            cfg_kwargs["response_mime_type"] = "application/json"
+            cfg_kwargs["response_schema"] = _ANALYSIS_SCHEMA
 
         with self._sem:
             resp = self.client.models.generate_content(
                 model=self.model,
                 contents=prompt,
-                config=types.GenerateContentConfig(
-                    temperature=0.0,
-                    max_output_tokens=self.max_output_tokens,
-                ),
+                config=types.GenerateContentConfig(**cfg_kwargs),
             )
         # `.text` concatenates the candidate's text parts; guard against None.
         return getattr(resp, "text", None) or ""

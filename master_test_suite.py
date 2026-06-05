@@ -142,7 +142,7 @@ class TestLLMOrchestration(unittest.TestCase):
     def test_consensus_logic(self):
         """Test Gemma Analyst inference logic."""
         # Mock analyze to return score for gemma
-        def mock_analyze(prompt, model_key):
+        def mock_analyze(prompt, model_key, structured=False):
             return '{"score": 90, "rating": "BUY"}'
                 
         self.analyst.analyze = mock_analyze
@@ -154,7 +154,7 @@ class TestLLMOrchestration(unittest.TestCase):
 
     def test_consensus_guardrail(self):
         """Test that a BUY rating is downgraded to HOLD if the score is < 70."""
-        def mock_analyze(prompt, model_key):
+        def mock_analyze(prompt, model_key, structured=False):
             return '{"score": 60, "rating": "BUY"}'
         
         self.analyst.analyze = mock_analyze
@@ -1659,6 +1659,68 @@ class TestScheduler(unittest.TestCase):
         now = self._et(2026, 6, 6, 2, 0)   # Saturday → Monday Jun 8
         nxt = _next_fire(3, 30, now=now)
         self.assertEqual((nxt.weekday(), nxt.day), (0, 8))
+
+
+class TestGeminiStructuredOutput(unittest.TestCase):
+    """GeminiBackend uses JSON-schema structured output on the scoring path (so the
+    score always parses) but free-form text for Ask-AI. Added 2026-06-05."""
+
+    def _stub_genai(self):
+        """Returns (genai_module, captured_calls). GenerateContentConfig is stubbed
+        to return its kwargs dict so we can inspect what generate() requested."""
+        import types as _t
+        captured = {}
+        gen = _t.ModuleType("google.genai")
+        gt = _t.ModuleType("google.genai.types")
+
+        class _Resp:
+            text = '{"score":73,"rating":"BUY","reasoning":"NVDA strong"}'
+
+        class _Models:
+            def generate_content(self, **kw):
+                captured.update(kw)
+                return _Resp()
+
+        class _Client:
+            def __init__(self, **kw):
+                self.models = _Models()
+
+        gen.Client = _Client
+        gt.GenerateContentConfig = lambda **kw: kw   # config -> plain dict
+        gen.types = gt
+        return gen, gt, captured
+
+    def _make_backend(self, gen, gt):
+        import sys, google
+        with patch.dict(sys.modules, {"google.genai": gen, "google.genai.types": gt}):
+            google.genai = gen
+            with patch.dict(os.environ, {"GEMINI_API_KEY": "x", "NUROQ_GEMINI_VERTEX": "0"}):
+                from analyst_backends import GeminiBackend
+                return GeminiBackend()
+
+    def test_scoring_path_sends_json_schema(self):
+        gen, gt, captured = self._stub_genai()
+        import sys, google
+        b = self._make_backend(gen, gt)
+        with patch.dict(sys.modules, {"google.genai": gen, "google.genai.types": gt}):
+            google.genai = gen
+            out = b.generate("score NVDA", structured=True)
+        cfg = captured.get("config", {})
+        self.assertEqual(out, '{"score":73,"rating":"BUY","reasoning":"NVDA strong"}')
+        self.assertEqual(cfg.get("response_mime_type"), "application/json")
+        self.assertIn("response_schema", cfg)
+        self.assertIn("score", cfg["response_schema"]["properties"])
+
+    def test_ask_path_is_free_text(self):
+        gen, gt, captured = self._stub_genai()
+        import sys, google
+        b = self._make_backend(gen, gt)
+        with patch.dict(sys.modules, {"google.genai": gen, "google.genai.types": gt}):
+            google.genai = gen
+            b.generate("why did NVDA move in May?", structured=False)
+        cfg = captured.get("config", {})
+        self.assertNotIn("response_schema", cfg)
+        self.assertNotIn("response_mime_type", cfg)
 
 
 if __name__ == "__main__":

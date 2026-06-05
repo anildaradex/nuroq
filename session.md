@@ -66,8 +66,20 @@ static IP was attached; baked into the script.)
   replaces launchd cron in the container. `/health` now reports scheduler state.
   Tests 104→108. Deploy uses **unique image tags** (vYYYYMMDD-HHMMSS) so
   `update-container` reliably re-pulls (preserves VM IP + /data).
-- **Still TODO:** fix Gemini score parsing; HTTPS (Caddy/CF Tunnel) before live;
-  frontend VITE_API_BASE + iOS re-point; live trading stays OFF.
+- **Gemini parsing FIXED (2026-06-05):** scoring path now uses Gemini structured
+  output (JSON schema + 2048-tok cap) so `ai_score` parses (was defaulting to 50
+  — verbose output truncated the JSON before the score key). Threaded a
+  `structured` flag through `analyst.analyze()` → only scoring paths (get_consensus,
+  analyze_single_ticker_data, analyze_stock) get JSON mode; Ask-AI stays free-text.
+  Tests 108→110 (`TestGeminiStructuredOutput`).
+- **GitHub Actions auto-deploy ADDED (2026-06-05):** `.github/workflows/deploy.yml`
+  deploys to the VM on push (build Dockerfile.cloud → push AR → update-container).
+  Auth via **Workload Identity Federation — no stored key.** Set up in GCP:
+  WIF pool `github-pool` + provider `github-provider` (owner-restricted),
+  SA `gh-deployer` (artifactregistry.writer + compute.instanceAdmin.v1 +
+  serviceAccountUser), repo bound via workloadIdentityUser. See deploy/README.md.
+- **Still TODO:** verify the first Actions run succeeds; HTTPS (Caddy/CF Tunnel)
+  before live; frontend VITE_API_BASE + iOS re-point; live trading stays OFF.
 
 ---
 

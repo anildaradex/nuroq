@@ -53,6 +53,26 @@ curl -H "X-NuroQ-Key: $NUROQ_API_KEY" http://$IP:8000/api/propose-sells
   `gcloud compute disks snapshot nuroq-data --zone us-central1-a` (cron or a
   resource policy). Or add Litestream → Cloud Storage for continuous backup.
 
+## CI/CD — GitHub Actions auto-deploy
+
+`.github/workflows/deploy.yml` auto-deploys on push to `main` or
+`feat/algo-claude-improvements` (and via manual "Run workflow"). It builds
+`Dockerfile.cloud`, pushes to Artifact Registry, and rolls the VM with
+`update-container` (env/secrets/static-IP/data preserved).
+
+**Auth = Workload Identity Federation (no stored key).** One-time setup already
+done in `nuroq-prod-anildara`:
+- WIF pool `github-pool` + OIDC provider `github-provider`
+  (issuer `token.actions.githubusercontent.com`, restricted to owner `anildaradex`).
+- Service account `gh-deployer@nuroq-prod-anildara.iam.gserviceaccount.com` with
+  `artifactregistry.writer`, `compute.instanceAdmin.v1`, `iam.serviceAccountUser`.
+- Repo `anildaradex/nuroq` bound via `roles/iam.workloadIdentityUser` on that SA.
+
+No GitHub secrets needed — the provider path + SA email are non-sensitive and live
+in the workflow. To recreate the WIF infra, see the gcloud commands in this repo's
+session log. The health check uses `gcloud` (the VM `:8000` firewall is owner-IP
+locked, so a runner curl would be blocked).
+
 ## Going live (later)
 Live trading stays OFF (`NUROQ_LIVE_TRADING=0`). To enable, the safety belt in
 `alpaca_executor._connect` also requires **`NUROQ_WASH_SALE_AWARE=1`** OR

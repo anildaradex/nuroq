@@ -146,14 +146,15 @@ class EnsembleAnalyst:
             self._remote = make_backend(self.backend)
             logger.log(f"🚀 AI backend ready: {self._remote.describe()}")
 
-    def analyze(self, prompt, model_key="gemma"):
+    def analyze(self, prompt, model_key="gemma", structured=False):
         # Cloud path: delegate raw generation to the configured backend. No
         # Metal command buffer to serialize, so no _gemma_lock here (the backend
-        # bounds its own concurrency).
+        # bounds its own concurrency). `structured=True` (scoring) asks the cloud
+        # backend for schema-constrained JSON; Gemma ignores it (DPO-trained format).
         if self.backend != "gemma":
             if self._remote is None:
                 self.load_all()
-            return self._remote.generate(prompt)
+            return self._remote.generate(prompt, structured=structured)
 
         # Local MLX path (unchanged behavior). Lazy import so this module loads
         # on Linux. All Gemma inferences MUST go through _gemma_lock — see the
@@ -175,7 +176,7 @@ class EnsembleAnalyst:
     def get_consensus(self, ticker, prompt):
         """No consensus check needed. Returns Gemma analysis directly."""
         logger.log(f"[{ticker}] ▶ Step 5a: Running Gemma inference...")
-        res = self.analyze(prompt, "gemma")
+        res = self.analyze(prompt, "gemma", structured=True)
         score = self.extract_score(res)
         logger.log(f"[{ticker}]    Gemma result → score={score}")
 
@@ -2756,7 +2757,7 @@ def analyze_single_ticker_data(ticker, pre_fetched_data=None, pre_fetched_funds=
         if not is_consensus:
             response = "{\"reasoning\": \"⚠️ ENSEMBLE WARNING: NO CONSENSUS FOUND.\", \"considerations\": [], \"metrics\": {}, \"rating\": \"HOLD\", \"score\": 50}"
     else:
-        response = analyst.analyze(prompt)
+        response = analyst.analyze(prompt, structured=True)
 
     # 4. Extract and Log
     structured_data = analyst.get_structured_data(response)
@@ -3098,7 +3099,7 @@ def analyze_stock(ticker, is_auto=False):
         # Route through analyst.analyze() so the EnsembleAnalyst._gemma_lock
         # serializes this with every other Gemma call site (prevents Metal
         # command-buffer collision crashes during volatile market-open minutes).
-        response = analyst.analyze(prompt)
+        response = analyst.analyze(prompt, structured=True)
         analysis_data = analyst.get_structured_data(response)
         reasoning = analysis_data.get("reasoning", "")
         score = int(analysis_data.get("score", 50))
