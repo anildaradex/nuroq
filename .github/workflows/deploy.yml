@@ -1,0 +1,73 @@
+name: Deploy to GCE
+
+# Auto-deploy NuroQ to the Compute Engine VM on push. Authenticates to GCP via
+# Workload Identity Federation (OIDC) — NO service-account key is stored in
+# GitHub. The WIF pool/provider + the gh-deployer service account were created in
+# project nuroq-prod-anildara (see deploy/README.md).
+#
+# Flow: build deploy/Dockerfile.cloud on the runner → push to Artifact Registry
+# with a unique tag → `gcloud compute instances update-container` rolls the VM to
+# the new image (its env/secrets/static-IP/data are preserved).
+
+on:
+  push:
+    branches: [main]   # main = production; deploys happen on merge to main
+    paths-ignore:
+      - '**.md'
+      - '.env.cloud.example'
+  workflow_dispatch: {}
+
+# Never run two deploys at once (single-instance VM; Telegram/websocket conflict).
+concurrency:
+  group: deploy-gce
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write   # required for WIF OIDC
+
+env:
+  PROJECT_ID: nuroq-prod-anildara
+  REGION: us-central1
+  ZONE: us-central1-a
+  VM: nuroq-backend
+  REPO: nuroq
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/661304162148/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: gh-deployer@nuroq-prod-anildara.iam.gserviceaccount.com
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker auth for Artifact Registry
+        run: gcloud auth configure-docker ${REGION}-docker.pkg.dev --quiet
+
+      - name: Build & push image
+        run: |
+          TAG="v$(date +%Y%m%d-%H%M%S)-${GITHUB_SHA::7}"
+          IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/nuroq:${TAG}"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          docker build -f deploy/Dockerfile.cloud -t "$IMAGE" .
+          docker push "$IMAGE"
+
+      - name: Roll the VM to the new image
+        run: |
+          gcloud compute instances update-container "$VM" --zone "$ZONE" \
+            --container-image "$IMAGE"
+
+      - name: Confirm VM is running
+        run: |
+          # The VM's :8000 firewall is locked to the owner's IP, so we can't curl
+          # /health from the runner — assert the instance is RUNNING via the API.
+          STATUS=$(gcloud compute instances describe "$VM" --zone "$ZONE" --format='get(status)')
+          echo "VM status: $STATUS"
+          test "$STATUS" = "RUNNING"
+          echo "✅ Deployed $IMAGE. Container restarts on the VM (~1-2 min to serve)."
