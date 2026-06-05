@@ -10,6 +10,22 @@
 
 ---
 
+## Session 6b (2026-06-04) — cloud migration: code made GCP-ready
+
+Decided **Compute Engine VM + Gemini**. Restructured NuroQ to run on Linux (full
+detail in `CLOUD_MIGRATION.md` §Status and `deploy/README.md`):
+- **MLX unblocked** — `pyproject.toml` markers (`sys_platform=='darwin'`) + lazy
+  import in `dashboard.py`. `import dashboard`/`backend.api` verified with no MLX.
+- **`analyst_backends.py`** — `GeminiBackend` (google-genai) behind the existing
+  `analyst.analyze()` chokepoint; `NUROQ_AI_BACKEND` selects gemma|gemini.
+- **`NUROQ_DB_PATH`** everywhere; **`X-NuroQ-Key`** auth middleware + `/health`.
+- **`deploy/`** — `Dockerfile.cloud`, idempotent `deploy_gce.sh`, `README.md`,
+  `.env.cloud.example`; hardened `.dockerignore`.
+- Tests 104/104 green. **Deploy blocked on:** GCP project choice + Gemini cred
+  (`GEMINI_API_KEY` or Vertex-via-SA). Then `PROJECT_ID=<p> ./deploy/deploy_gce.sh`.
+
+---
+
 ## Session 6 (2026-06-03) — §475 mode + PDT-rule context
 
 **North-star (stated by user):** make NuroQ a fully autonomous live-trading app —

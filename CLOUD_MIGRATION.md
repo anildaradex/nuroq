@@ -6,6 +6,33 @@
 
 ---
 
+## ⚑ Status (2026-06-04) — code is cloud-ready; deploy is one command away
+
+**Decided:** Compute Engine VM (e2-small) + Gemini (GCP-native AI backend).
+
+**DONE (committed, tested — 104/104 green):**
+- ✅ **MLX no longer blocks Linux.** `pyproject.toml` gates `mlx-lm`/`mlx-lm-lora`
+  behind `sys_platform=='darwin'`; `dashboard.py` lazy-imports MLX. `import
+  dashboard` + `backend.api` verified on a simulated Linux box with no MLX.
+- ✅ **Swappable AI backend** (`analyst_backends.py`, `NUROQ_AI_BACKEND`): the one
+  `analyst.analyze()` chokepoint now routes to **Gemini** (`google-genai`) in the
+  cloud, or local MLX Gemma on the Mac. Same parsing/consensus logic.
+- ✅ **12-factor config:** all DB access routed through `NUROQ_DB_PATH`.
+- ✅ **API auth:** `X-NuroQ-Key` middleware + unauthenticated `/health`.
+- ✅ **Deploy scaffolding:** `deploy/Dockerfile.cloud`, `deploy/deploy_gce.sh`
+  (idempotent build→secrets→disk→VM→firewall), `deploy/README.md`,
+  `.env.cloud.example`. Hardened `.dockerignore`.
+
+**BLOCKED on you (the actual `gcloud` push):**
+1. **Which GCP project** to deploy into (none named "nuroq"; won't guess).
+2. **Gemini credential:** a `GEMINI_API_KEY` in `.env`, OR Vertex-via-service-
+   account (`NUROQ_GEMINI_VERTEX=1`, no key). `.env` currently has Polygon/Alpaca/
+   Telegram but not this.
+
+Then deploy is: `PROJECT_ID=<proj> ./deploy/deploy_gce.sh` (see `deploy/README.md`).
+
+---
+
 ## 0. Executive summary
 
 NuroQ is ~90% cloud-ready already, because of one lucky design fact: **every AI

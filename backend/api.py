@@ -91,6 +91,34 @@ app.add_middleware(
 )
 
 
+# ─── API-key auth ────────────────────────────────────────────────────────────
+#
+# On a LAN this backend was unauthenticated. Exposed on a public cloud URL (GCP)
+# that is unsafe — anyone could read your portfolio or place trades. When
+# NUROQ_API_KEY is set, every request must carry a matching `X-NuroQ-Key` header
+# (or `?api_key=` for convenience). When it is UNSET, auth is disabled (preserves
+# the local/LAN dev experience). The health check and CORS preflight are always
+# open so uptime probes and browsers work.
+_API_KEY = os.getenv("NUROQ_API_KEY")
+_AUTH_EXEMPT_PATHS = {"/health", "/api/health", "/", "/docs", "/openapi.json", "/redoc"}
+
+
+@app.middleware("http")
+async def _api_key_guard(request, call_next):
+    from starlette.responses import JSONResponse
+    if _API_KEY and request.method != "OPTIONS" and request.url.path not in _AUTH_EXEMPT_PATHS:
+        presented = request.headers.get("x-nuroq-key") or request.query_params.get("api_key")
+        if presented != _API_KEY:
+            return JSONResponse(status_code=401, content={"detail": "Invalid or missing API key."})
+    return await call_next(request)
+
+
+@app.get("/health")
+def health():
+    """Unauthenticated liveness probe for GCE/load-balancer health checks."""
+    return {"ok": True, "service": "nuroq", "ai_backend": os.getenv("NUROQ_AI_BACKEND", "gemma")}
+
+
 # ─── Schemas ─────────────────────────────────────────────────────────────────
 
 class StatusPillsResp(BaseModel):
@@ -314,7 +342,7 @@ def today_cards():
 
     news_24h = {}
     try:
-        with sqlite3.connect("nuroq.db") as conn:
+        with sqlite3.connect(dash.DB_PATH) as conn:
             rows = conn.execute(
                 "SELECT classification, COUNT(*) FROM news_cache "
                 "WHERE ingested_at > ? AND classification != 'NEUTRAL' "
@@ -353,7 +381,7 @@ def today_feed():
     events: list[FeedEventResp] = []
     day_ago = time.time() - 86400
     try:
-        with sqlite3.connect("nuroq.db") as conn:
+        with sqlite3.connect(dash.DB_PATH) as conn:
             for ts, ticker, direction, sb, sa, price, action, _notes in conn.execute(
                 "SELECT ts, ticker, direction, score_before, score_after, price, action, notes "
                 "FROM live_triggers WHERE ts > ? ORDER BY ts DESC LIMIT 30",
@@ -949,7 +977,7 @@ class AgentLogRow(BaseModel):
 @app.get("/api/agent/log", response_model=list[AgentLogRow])
 def agent_log(limit: int = 100):
     try:
-        with sqlite3.connect("nuroq.db") as conn:
+        with sqlite3.connect(dash.DB_PATH) as conn:
             rows = conn.execute(
                 "SELECT ts, ticker, direction, score_before, score_after, "
                 "price, action, notes FROM live_triggers "

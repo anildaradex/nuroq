@@ -1,0 +1,52 @@
+# NuroQ cloud image — FastAPI backend + live agent for GCP (Linux/amd64).
+#
+# Differs from the repo-root Dockerfile (which targets the Mac/Gradio dev flow):
+#   • MLX is NOT installed — pyproject.toml gates mlx-lm with
+#     `sys_platform == 'darwin'`, so on this Linux build it is skipped. The AI
+#     tiebreaker runs via Gemini (NUROQ_AI_BACKEND=gemini, google-genai).
+#   • Entry point is uvicorn(backend.api:app), not Gradio.
+#   • TZ baked to America/New_York so is_market_hours() is correct.
+#
+# Build (no local Docker needed — Cloud Build does it):
+#   gcloud builds submit --tag REGION-docker.pkg.dev/PROJECT/nuroq/nuroq:latest \
+#       --config deploy/cloudbuild.yaml .
+# or simply:
+#   gcloud builds submit --tag REGION-docker.pkg.dev/PROJECT/nuroq/nuroq:latest -f deploy/Dockerfile.cloud .
+
+FROM python:3.12-slim
+
+# uv for fast, reproducible installs
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+# tzdata so the container clock matches US market hours; build tools for any
+# wheels that need compiling (sentence-transformers/torch pull prebuilt wheels,
+# but keep gcc available to be safe).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        tzdata ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+ENV TZ=America/New_York
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
+WORKDIR /app
+
+# Dependencies first (layer-cached). mlx-lm/mlx-lm-lora are skipped here by their
+# darwin marker; google-genai + the rest install normally.
+COPY pyproject.toml uv.lock ./
+RUN uv pip install --system -r pyproject.toml
+
+# App code (frontend/, data, logs, secrets all excluded by .dockerignore)
+COPY . .
+
+# Cloud defaults — overridden at deploy time by the VM's --container-env.
+ENV NUROQ_AI_BACKEND=gemini \
+    NUROQ_DB_PATH=/data/nuroq.db \
+    NUROQ_BACKGROUND_SERVICES=1 \
+    NUROQ_AUTOSTART_AGENT=1 \
+    PORT=8000
+
+EXPOSE 8000
+
+# /data is the mount point for the persistent disk (SQLite lives here).
+RUN mkdir -p /data
+
+CMD ["sh", "-c", "uvicorn backend.api:app --host 0.0.0.0 --port ${PORT:-8000} --log-level info"]

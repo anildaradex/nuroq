@@ -1,8 +1,37 @@
+# ─── Python / venv ───────────────────────────────────────────────────────────
 .venv/
 __pycache__/
 *.pyc
 .git/
 .gitignore
+
+# ─── Secrets — NEVER bake into an image (injected via env / Secret Manager) ───
+.env
+.env.*
+!.env.cloud.example
+
+# ─── Local data / runtime state — lives on the GCE data volume, not the image ─
+*.db
+*.db-shm
+*.db-wal
+nuroq.db*
+agent_memory.db
+*.log
 shadow_trades.csv
 portfolio.csv
-*.log
+*.csv
+dpo_data/
+scratch/
+.gradio/
+tests/
+
+# ─── Big binaries the backend doesn't need ───────────────────────────────────
+*.mp3
+*.png
+*.jpg
+*.jpeg
+
+# ─── Frontend — served by a CDN (Cloudflare Pages / Vercel), not this image.
+#     backend/api.py's SPA mount is guarded by `if _DIST.is_dir()`, so omitting
+#     frontend/ simply makes the container serve the API only. ─────────────────
+frontend/

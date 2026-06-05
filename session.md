@@ -18,7 +18,31 @@
 
 ---
 
-## Current session — Session 6 — 2026-06-03 (IN PROGRESS)
+## Current session — Session 6 — 2026-06-03 → 06-04 (IN PROGRESS)
+
+**Cloud migration — code made GCP-ready (2026-06-04):** Decided **Compute Engine
+VM + Gemini**. Did the real restructuring so NuroQ can run on Linux:
+- **MLX unblocked:** `pyproject.toml` gates `mlx-lm`/`mlx-lm-lora` behind
+  `sys_platform=='darwin'` (Linux skips them); `dashboard.py` lazy-imports MLX
+  (no top-level `from mlx_lm import`). Verified `import dashboard` + `backend.api`
+  on a simulated no-MLX Linux env.
+- **Swappable AI backend:** new `analyst_backends.py` (`GeminiBackend` via
+  `google-genai`); `EnsembleAnalyst` routes through `NUROQ_AI_BACKEND` (gemma=local
+  MLX / gemini=cloud) at the single `analyze()` chokepoint — same parse/consensus.
+- **12-factor:** all DB access via `NUROQ_DB_PATH` (dashboard.py + backend/api.py
+  hardcoded `nuroq.db` removed). **API auth:** `X-NuroQ-Key` middleware + open
+  `/health`. Hardened `.dockerignore`.
+- **Deploy scaffolding:** `deploy/Dockerfile.cloud` (no MLX, Gemini, TZ=ET),
+  `deploy/deploy_gce.sh` (idempotent build→Secret Manager→disk→VM→firewall),
+  `deploy/README.md`, `.env.cloud.example`.
+- Tests still **104/104 green**. gcloud authed (anil.dara@gmail.com), billing open.
+- **BLOCKED on user for the actual push:** (1) which GCP project (none named nuroq),
+  (2) Gemini cred — `GEMINI_API_KEY` in `.env` OR Vertex-via-SA. `.env` has
+  Polygon/Alpaca/Telegram only. Then: `PROJECT_ID=<p> ./deploy/deploy_gce.sh`.
+
+---
+
+## Session 6 — 2026-06-03 (earlier)
 
 **§475(f) mode + PDT-rule context (tax/regulatory):**
 - Reviewed two user claims for accuracy (web-verified): (1) **PDT rule abolished**
