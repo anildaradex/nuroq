@@ -2,9 +2,74 @@
 
 > **For the next session.** Read this first. Everything you need to pick up where the last session ended.
 >
-> **Date:** 2026-05-31 (session 5)
+> **Date:** 2026-06-03 (session 6)
 > **Branch:** `feat/algo-claude-improvements`
-> **Latest shipped:** Ask-AI Q&A bar under the Analyze chart; wash-sale Layer-1 guard on all BUY paths; limit-bracket orders; OrderReviewModal; double-submit prevention; Watchlist ⚡ Trade button; Refresh-BUY Telegram alerts w/ EXECUTE buttons; score-shift detector in log-only (feed) mode; premarket + launchd fixes.
+> **Latest shipped:** (1) `NUROQ_SECTION_475` flag (default OFF) — when a valid §475(f) election is asserted, `wash_sale_check` short-circuits to `risk=False` (neutralizing all 3 BUY gates) and the live-trading safety belt accepts it in lieu of `NUROQ_WASH_SALE_AWARE`. (2) **Option B — `propose_sells()`**: the quant layer now proactively proposes SELLs on held positions (TAX_LOSS_HARVEST §475-gated, ROTATE, EXIT_WEAK), surfaced in Next Actions + `GET /api/propose-sells` + the premarket cron feed. Tests 91→104. Prior: Ask-AI Q&A bar; wash-sale Layer-1 guard; limit-bracket orders; OrderReviewModal; double-submit prevention; Refresh-BUY Telegram alerts; premarket + launchd fixes.
+>
+> ✅ **Backend restarted 2026-06-03 23:38 and now serving the new code** (`/api/propose-sells` returns 200; LiveAgent autostarted, 154 tickers / 9 held). BUT it was started MANUALLY in the foreground/background (`uv run uvicorn backend.api:app`), NOT via launchd — the `com.nuroq.backend` launchd job is failing with **exit 78 (EX_CONFIG)** and wrote no logs on kickstart, i.e. the documented `~/Documents` TCC / Full-Disk-Access block. The manual process won't survive a reboot/logout. **TODO:** re-grant Full Disk Access (System Settings → Privacy & Security → Full Disk Access → `/opt/homebrew/bin/uv` + `/bin/sh`) then `launchctl kickstart -k gui/$(id -u)/com.nuroq.backend` for durable autostart.
+
+---
+
+## Session 6 (2026-06-03) — §475 mode + PDT-rule context
+
+**North-star (stated by user):** make NuroQ a fully autonomous live-trading app —
+autotrades without intervention, backtests, measures efficacy, learns from
+mistakes, self-improves. Build toward this.
+
+**Regulatory facts (web-verified this session):**
+- **PDT rule abolished** — SEC approved FINRA's proposal 2026-04-14, effective
+  ~2026-06-04. $25k minimum & "Pattern Day Trader" designation removed; replaced by
+  risk-based intraday margin under Rule 4210 (bare margin min stays $2k). 18-month
+  broker phase-in to ~Oct 20 2027 (per-broker enforcement, incl. Alpaca, may lag).
+  NuroQ never modeled PDT, so there was nothing to remove — the quant layer is free
+  to round-trip intraday.
+- **§475(f) MTM election** removes wash-sale (§1091) + the $3k cap-loss limit;
+  gains/losses become ordinary on Form 4797. It is an election *statement* + Form
+  3115, NOT a "Form 475." **For existing individuals the 2026 election window
+  closed Apr 15 2026.** Still available via a new entity (~75-day Rev. Proc. 99-17
+  window) or for 2027 (by Apr 15 2027). So the flag below is built but should
+  remain OFF for 2026 individual trading.
+- **Crucial:** NuroQ's wash-sale code is *advisory only*. Disabling it does not
+  change real tax treatment (governed by the filed election + 1099-B), and the app
+  is still paper-only — no live taxable trades today.
+
+**What shipped — `NUROQ_SECTION_475` (default OFF):**
+- `dashboard.section_475_active()` (dashboard.py ~1703) — reads env live, no restart.
+- `dashboard.wash_sale_check()` short-circuits at the top when on → `risk=False`,
+  empty sell lists, explanatory hint, `section_475: True`, returned BEFORE any
+  Alpaca call / cache. One chokepoint ⇒ live_agent `_handle_buy_crossing`,
+  `handle_quick_trade`, and the iOS OrderReviewModal all pass through (they read
+  `risk`). Not cached, so toggling is instant.
+- `alpaca_executor._connect` belt (alpaca_executor.py ~51) now passes if
+  `NUROQ_SECTION_475=1` OR `NUROQ_WASH_SALE_AWARE=1` when `NUROQ_LIVE_TRADING=1`.
+- Tests: `TestSection475` in master_test_suite.py (helper default-off; short-circuit
+  doesn't hit Alpaca; default path still flags loss re-entry; §475 satisfies belt;
+  belt still blocks with neither ack). **96/96 green, ~4.2s.**
+
+**Option B — SHIPPED this session.** The core quant layer now proactively proposes
+SELLs on held positions, complementing the live agent's reactive SELL crossing
+(score ≤ 30, live_agent.py:593):
+- `dashboard.propose_sells()` (pure, fails-closed) — joins `alpaca_api.list_positions()`
+  with `watchlist_today` scores. Three proposal kinds:
+  - **TAX_LOSS_HARVEST** — §475-GATED (only when `section_475_active()`; else a
+    wash-sale trap, suppressed). Material loss (≥`HARVEST_MIN_LOSS_PCT`=0.02) on a
+    non-strong holding (score < `HARVEST_SCORE_CEILING`=55, or off today's list).
+  - **ROTATE** — weak holding (score ≤ `SELL_PROPOSE_WEAK_SCORE`=45) + a non-held
+    BUY out-scoring it by ≥`ROTATE_SCORE_EDGE`=20 → `rotate_into` that name.
+  - **EXIT_WEAK** — weak holding, no stronger candidate.
+  Ranked harvest→rotate→exit, worst-score/biggest-loss first.
+- `dashboard.log_sell_proposals()` — PROPOSE_SELL rows in live_triggers (dedup per
+  date/ticker/kind) → auto-surface in the React Recent Activity feed.
+- Surfaces: `render_next_actions` card (top 4), `GET /api/propose-sells`
+  (backend/api.py — returns proposals + `section_475`), and `premarket_refresh.main`
+  (logs them each morning). All ADVISORY — nothing auto-executes.
+- Tests: `TestSellProposals` (8 cases) in master_test_suite.py. 104/104 green.
+
+**Still open:** React UI card for sell proposals (feed shows the rows already, but
+a card with SELL buttons closes the loop); Option C (Investor vs Trader-§475 regime
+in the UI); threshold tuning against real watchlist behavior (first live run flagged
+several ROTATEs — confirm the score-decay band feels right). And **restart the
+backend** so :8000 serves the new endpoint.
 
 ---
 

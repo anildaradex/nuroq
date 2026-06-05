@@ -39,24 +39,31 @@ class LiveAlpacaExecutor:
         """(Re)attempts to connect. Returns True if the account is now ACTIVE.
 
         Safety belt: hard-fail if someone tries to set NUROQ_LIVE_TRADING=1
-        without also setting NUROQ_WASH_SALE_AWARE=1. The wash-sale check
+        without acknowledging the wash-sale exposure. The wash-sale check
         protects against accidental tax liability from algorithmic re-entries
         within the IRS 61-day window — it MUST be reviewed and acknowledged
-        before any real money trades.
+        before any real money trades. The acknowledgment is satisfied by EITHER
+        NUROQ_WASH_SALE_AWARE=1 (you've reviewed the guard) OR NUROQ_SECTION_475=1
+        (you've asserted a valid §475(f) mark-to-market election, under which the
+        wash-sale rule does not apply at all — so there is nothing to guard).
         """
         if not (self.api_key and self.api_secret):
             logger.warning("⚠️ Alpaca keys not found in .env. Execution will be simulated.")
             self.is_connected = False
             return False
         live = os.getenv("NUROQ_LIVE_TRADING", "0") == "1"
-        if live and os.getenv("NUROQ_WASH_SALE_AWARE", "0") != "1":
+        section_475 = os.getenv("NUROQ_SECTION_475", "0") == "1"
+        wash_sale_aware = os.getenv("NUROQ_WASH_SALE_AWARE", "0") == "1"
+        if live and not (wash_sale_aware or section_475):
             raise RuntimeError(
                 "REFUSING to enable live trading: NUROQ_LIVE_TRADING=1 was set "
-                "but NUROQ_WASH_SALE_AWARE=1 was not. The agent's 30-min "
-                "per-ticker cooldown is far shorter than the IRS wash-sale "
-                "window (30 days), which can disallow real losses for tax "
-                "purposes. Acknowledge by setting NUROQ_WASH_SALE_AWARE=1 in "
-                ".env (and ideally enable the wash_sale_check guard in code)."
+                "but neither NUROQ_WASH_SALE_AWARE=1 nor NUROQ_SECTION_475=1 was. "
+                "The agent's 30-min per-ticker cooldown is far shorter than the "
+                "IRS wash-sale window (30 days), which can disallow real losses "
+                "for tax purposes. Acknowledge by setting NUROQ_WASH_SALE_AWARE=1 "
+                "in .env (you've reviewed the guard), or NUROQ_SECTION_475=1 if a "
+                "valid §475(f) mark-to-market election is in effect (wash-sale "
+                "rule does not apply)."
             )
         try:
             self.client = TradingClient(self.api_key, self.api_secret, paper=not live)

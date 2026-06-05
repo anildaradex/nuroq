@@ -233,10 +233,22 @@ def main() -> int:
         except Exception as e:
             print(f"[premarket_refresh] ⚠️ News refresh failed: {e}", file=sys.stderr)
 
+    # ─── Sell proposals (quant housekeeping on held positions) ──────────────
+    # Deliberate "what should I sell?" pass: tax-loss harvest (under §475),
+    # rotate decayed holdings into stronger names, or flag weak exits. Logged as
+    # PROPOSE_SELL rows that surface in the Recent Activity feed.
+    n_props = 0
+    try:
+        n_props = dashboard.log_sell_proposals()
+        print(f"[premarket_refresh] Logged {n_props} sell proposal(s) to the feed.")
+    except Exception as e:
+        print(f"[premarket_refresh] ⚠️ Sell-proposal pass failed: {e}", file=sys.stderr)
+
     elapsed = (datetime.now() - started).total_seconds()
     summary = (f"✅ Pre-market refresh done in {elapsed:.0f}s: "
                f"{n_price} prices updated, {n_news} new headlines from "
-               f"actionable subset (NewsPoller covers the rest).")
+               f"actionable subset (NewsPoller covers the rest), "
+               f"{n_props} sell proposal(s).")
     print(f"[premarket_refresh] {summary}")
     notify(summary)
     return 0

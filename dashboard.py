@@ -1700,6 +1700,24 @@ _wash_sale_cache: dict = {}
 _wash_sale_lock = threading.Lock()
 
 
+def section_475_active() -> bool:
+    """True iff the user has explicitly asserted a valid §475(f) mark-to-market
+    election is in effect (NUROQ_SECTION_475=1).
+
+    Under a valid §475 election the wash-sale rule (§1091) and the $3k capital-loss
+    limitation do NOT apply, so NuroQ's in-app wash-sale guard becomes noise and is
+    neutralized. DEFAULT OFF — the software must never *assume* the election; the
+    user asserts it. Read live from env each call so it can be toggled without a
+    full backend restart.
+
+    IMPORTANT: this flag governs NuroQ's *advisory* behavior only. It has NO effect
+    on actual tax treatment, which is determined solely by your filed election and
+    your broker 1099-B. (As of 2026-06-03 the 2026 election window has closed for
+    existing individuals; this flag is built for a future entity / 2027 election.)
+    """
+    return os.getenv("NUROQ_SECTION_475", "0") == "1"
+
+
 def wash_sale_check(ticker: str, force_refresh: bool = False) -> dict:
     """
     Returns structured wash-sale risk assessment for `ticker`. Schema:
@@ -1724,6 +1742,21 @@ def wash_sale_check(ticker: str, force_refresh: bool = False) -> dict:
     if not ticker:
         return {"ticker": "", "risk": False, "recent_sells": [], "likely_loss_sells": [],
                 "hint": "", "days_until_safe": 0, "cached_at": time.time()}
+
+    # §475(f) mark-to-market short-circuit. If the user has asserted a valid
+    # election is in effect, the wash-sale rule does not apply — neutralize the
+    # guard at this single chokepoint so EVERY BUY gate (live_agent, quick trade,
+    # iOS OrderReviewModal) passes through automatically, since they all key off
+    # the returned `risk` flag. Returns BEFORE any Alpaca call or cache write, and
+    # is not cached, so toggling NUROQ_SECTION_475 takes effect immediately.
+    if section_475_active():
+        return {
+            "ticker": ticker, "risk": False, "recent_sells": [], "likely_loss_sells": [],
+            "hint": ("§475(f) mark-to-market elected — wash-sale rule (§1091) does not "
+                     "apply; re-entry unrestricted. (Advisory flag only; actual tax "
+                     "treatment is governed by your filed election, not this app.)"),
+            "days_until_safe": 0, "cached_at": time.time(), "section_475": True,
+        }
 
     # Cache hit?
     with _wash_sale_lock:
@@ -1813,6 +1846,175 @@ def wash_sale_check(ticker: str, force_refresh: bool = False) -> dict:
     return result
 
 
+# ─── Quant sell-proposal engine — the core quant layer PROPOSING sales ───────
+#
+# Beyond the live agent's reactive SELL-crossing exit (fires at score ≤ 30), this
+# is the deliberate "what should I sell?" pass over currently-held positions. Two
+# 2026 regulatory changes shape what it is willing to propose:
+#
+#   • PDT rule abolished (SEC approved 2026-04-14, effective ~2026-06-04): no more
+#     $25k-minimum / 4-day-trade cap, so same-day round-trips and free intraday
+#     rotation are allowed. NuroQ never modeled PDT, so in practice this just means
+#     the proposer needn't throttle trade frequency.
+#   • §475(f) mark-to-market (NUROQ_SECTION_475=1): the wash-sale rule does not
+#     apply, so realizing a LOSS and re-entering immediately is fine. This unlocks
+#     the TAX_LOSS_HARVEST proposal, which would otherwise be a wash-sale trap and
+#     is therefore SUPPRESSED unless §475 mode is on.
+#
+# Proposals are ADVISORY. `propose_sells()` is a PURE function (no side effects),
+# so it is trivially testable; `log_sell_proposals()` persists them as PROPOSE_SELL
+# rows in live_triggers (which surface automatically in the Recent Activity feed).
+# Nothing here auto-executes — the user acts via the normal SELL paths
+# (Watchlist ⚡ / Telegram SELL buttons / close_position).
+
+# Tunables — deliberately gentler than the live SELL crossing (30): this is
+# proactive housekeeping, not a stop-out.
+SELL_PROPOSE_WEAK_SCORE = 45    # held score ≤ this → conviction decayed; propose trim/exit
+HARVEST_SCORE_CEILING   = 55    # only harvest losers that aren't still strong holds
+HARVEST_MIN_LOSS_PCT    = 0.02  # ignore trivial (<2%) paper losses — not worth the round-trip
+ROTATE_SCORE_EDGE       = 20    # a watchlist BUY must out-score the holding by this to rotate
+
+
+def propose_sells() -> list:
+    """
+    Deliberate quant pass over held positions → ranked list of SELL proposals.
+
+    Each proposal dict:
+      {"ticker", "kind": "TAX_LOSS_HARVEST"|"ROTATE"|"EXIT_WEAK", "shares",
+       "current_price", "avg_cost", "unrealized_pl", "unrealized_pl_pct",
+       "score": int|None, "rotate_into": str|None, "section_475": bool, "reason"}
+
+    Returns [] (never raises) on any data error — fails closed (propose nothing).
+    """
+    s475 = section_475_active()
+    try:
+        positions = alpaca_api.list_positions()
+    except Exception as e:
+        logger.log(f"⚠️ propose_sells: list_positions failed: {e}", level="WARNING")
+        return []
+    if not positions:
+        return []
+
+    try:
+        wl = watchlist_today.get_all()
+    except Exception:
+        wl = []
+    score_by_ticker = {r["ticker"].upper(): r.get("quant_score")
+                       for r in wl if r.get("quant_score") is not None}
+    held_syms = {p["symbol"].upper() for p in positions}
+    # Best non-held BUY candidate from today's list — the rotation target.
+    buy_candidates = sorted(
+        [r for r in wl
+         if str(r.get("recommendation", "")).upper() == "BUY"
+         and r.get("quant_score") is not None
+         and r["ticker"].upper() not in held_syms],
+        key=lambda r: r["quant_score"], reverse=True,
+    )
+    top_candidate = buy_candidates[0] if buy_candidates else None
+
+    proposals = []
+    for p in positions:
+        tkr    = p["symbol"].upper()
+        score  = score_by_ticker.get(tkr)
+        pl     = p.get("unrealized_pl", 0.0)
+        plpc   = p.get("unrealized_plpc", 0.0)   # Alpaca: fraction, e.g. -0.034
+        cur    = p.get("current_price", 0.0)
+        avg    = p.get("avg_entry_price", 0.0)
+        shares = p.get("qty", 0.0)
+
+        kind = rotate_into = reason = None
+
+        # 1) TAX-LOSS HARVEST — meaningful only under §475 (else a wash-sale trap,
+        #    so we stay silent). Realize a real paper loss on a position that isn't
+        #    a strong-conviction hold; under §475 re-entry is unrestricted.
+        is_material_loss      = pl < 0 and abs(plpc) >= HARVEST_MIN_LOSS_PCT
+        score_ok_for_harvest  = (score is None) or (score < HARVEST_SCORE_CEILING)
+        if s475 and is_material_loss and score_ok_for_harvest:
+            kind = "TAX_LOSS_HARVEST"
+            sc_txt = f"score {score}" if score is not None else "off today's watchlist"
+            reason = (
+                f"§475 tax-loss harvest: {tkr} is down ${abs(pl):,.0f} "
+                f"({plpc*100:+.1f}%), {sc_txt}. Under your §475 election the loss is "
+                f"deductible now and the wash-sale rule does not apply, so you may "
+                f"re-enter immediately if the thesis still holds."
+            )
+
+        # 2) ROTATE / EXIT_WEAK — conviction has decayed (low current score).
+        elif score is not None and score <= SELL_PROPOSE_WEAK_SCORE:
+            if top_candidate and (top_candidate["quant_score"] - score) >= ROTATE_SCORE_EDGE:
+                kind = "ROTATE"
+                rotate_into = top_candidate["ticker"].upper()
+                reason = (
+                    f"Rotate: {tkr} score has decayed to {score}. {rotate_into} scores "
+                    f"{top_candidate['quant_score']} (+{top_candidate['quant_score'] - score}). "
+                    f"Free the capital and rotate into the stronger name. (Different "
+                    f"ticker — not a wash sale regardless of §475; PDT rule lifted, so "
+                    f"same-session is fine.)"
+                )
+            else:
+                kind = "EXIT_WEAK"
+                pl_txt = f"up ${pl:,.0f}" if pl >= 0 else f"down ${abs(pl):,.0f}"
+                reason = (
+                    f"Exit weak: {tkr} score has decayed to {score} "
+                    f"(≤ {SELL_PROPOSE_WEAK_SCORE}); position is {pl_txt} "
+                    f"({plpc*100:+.1f}%). Conviction is gone — consider trimming/closing."
+                )
+
+        if kind is None:
+            continue
+
+        proposals.append({
+            "ticker": tkr, "kind": kind, "shares": shares,
+            "current_price": cur, "avg_cost": avg,
+            "unrealized_pl": round(pl, 2), "unrealized_pl_pct": round(plpc * 100, 2),
+            "score": score, "rotate_into": rotate_into,
+            "section_475": bool(s475 and kind == "TAX_LOSS_HARVEST"),
+            "reason": reason,
+        })
+
+    # Rank: harvest first (time-sensitive tax value), then rotate, then weak exit;
+    # within a kind, worst score then biggest loss first.
+    kind_rank = {"TAX_LOSS_HARVEST": 0, "ROTATE": 1, "EXIT_WEAK": 2}
+    proposals.sort(key=lambda x: (kind_rank.get(x["kind"], 9),
+                                  x["score"] if x["score"] is not None else 999,
+                                  x["unrealized_pl"]))
+    return proposals
+
+
+# Dedup PROPOSE_SELL feed rows to one per (date, ticker, kind) so repeated calls
+# (premarket + on-demand API) don't flood the Recent Activity feed.
+_proposed_sell_keys: set = set()
+_proposed_sell_lock = threading.Lock()
+
+
+def log_sell_proposals(proposals: Optional[list] = None) -> int:
+    """
+    Persist sell proposals as PROPOSE_SELL rows in live_triggers (they surface in
+    the Recent Activity feed). Deduped per (date, ticker, kind). Computes the
+    proposals itself if not passed. Returns the number of NEW rows written.
+    """
+    if proposals is None:
+        proposals = propose_sells()
+    today = datetime.now().strftime("%Y-%m-%d")
+    written = 0
+    for pr in proposals:
+        key = f"{today}:{pr['ticker']}:{pr['kind']}"
+        with _proposed_sell_lock:
+            if key in _proposed_sell_keys:
+                continue
+            _proposed_sell_keys.add(key)
+        try:
+            live_triggers.log(
+                pr["ticker"], "SELL", pr.get("score"), pr.get("score") or 0,
+                pr.get("current_price") or 0.0,
+                action="PROPOSE_SELL", notes=f"[{pr['kind']}] {pr['reason']}",
+            )
+            written += 1
+        except Exception as e:
+            logger.log(f"⚠️ log_sell_proposals({pr['ticker']}): {e}", level="WARNING")
+    return written
+
+
 def render_next_actions() -> str:
     """
     Smart 'what to do next' card on the Today tab. Analyzes current system
@@ -1874,6 +2076,18 @@ def render_next_actions() -> str:
                     ("🔴", f"**Block-level negative news on held position {tk}.** "
                      f"_{short}_ — review the position; consider closing.")
                 )
+    except Exception:
+        pass
+
+    # Quant sell proposals — harvest / rotate / exit-weak on held positions.
+    try:
+        label = {"TAX_LOSS_HARVEST": "🧾 Tax-loss harvest",
+                 "ROTATE": "🔁 Rotate", "EXIT_WEAK": "📉 Exit weak"}
+        for pr in propose_sells()[:4]:
+            tag = label.get(pr["kind"], "📉 Sell")
+            suggestions.append(
+                ("🟡", f"**{tag} · {pr['ticker']}.** {pr['reason']}")
+            )
     except Exception:
         pass
 
