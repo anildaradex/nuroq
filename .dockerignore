@@ -31,7 +31,9 @@ tests/
 *.jpg
 *.jpeg
 
-# ─── Frontend — served by a CDN (Cloudflare Pages / Vercel), not this image.
-#     backend/api.py's SPA mount is guarded by `if _DIST.is_dir()`, so omitting
-#     frontend/ simply makes the container serve the API only. ─────────────────
-frontend/
+# ─── Frontend — the SPA is built in a Docker stage and baked in (backend serves
+#     it at /). Keep the source in context, but exclude heavy/build dirs. ───────
+frontend/node_modules/
+frontend/dist/
+frontend/ios/
+frontend/.last-built-api-base
