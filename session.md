@@ -36,9 +36,23 @@ VM + Gemini**. Did the real restructuring so NuroQ can run on Linux:
   `deploy/deploy_gce.sh` (idempotent build→Secret Manager→disk→VM→firewall),
   `deploy/README.md`, `.env.cloud.example`.
 - Tests still **104/104 green**. gcloud authed (anil.dara@gmail.com), billing open.
-- **BLOCKED on user for the actual push:** (1) which GCP project (none named nuroq),
-  (2) Gemini cred — `GEMINI_API_KEY` in `.env` OR Vertex-via-SA. `.env` has
-  Polygon/Alpaca/Telegram only. Then: `PROJECT_ID=<p> ./deploy/deploy_gce.sh`.
+**🚀 DEPLOYED TO GCP (2026-06-04, LIVE):** Project **`nuroq-prod-anildara`**,
+e2-medium VM **`nuroq-backend`** @ **35.192.179.76**, region us-central1-a.
+- `/health` → 200 (`ai_backend: gemini`); auth blocks w/o key (401), passes w/ key
+  (200); `/api/propose-sells` → 200. Cloud Build image (mlx skipped, google-genai
+  2.8.0 + torch). Gemini via **Vertex** (VM service account, no key). Secrets in
+  Secret Manager. SQLite on host-path `/var/lib/nuroq` (mounted /data).
+- **Gotchas hit & fixed:** (1) `gcloud builds submit --tag -f` invalid → added
+  `deploy/cloudbuild.yaml` pointing at `Dockerfile.cloud`. (2) e2-small (2GB) +
+  separate-disk `--container-mount-disk` → OOM + konlet fsck-on-restart race
+  (crash loop). Fixed: **e2-medium (4GB)** + **host-path mount** on a 30GB boot
+  disk. (3) Granted compute SA `artifactregistry.reader` + `aiplatform.user`.
+  (4) Key regenerated each run → script now reuses Secret Manager key + persists
+  to .env, never echoes it.
+- Retrieve API key: `gcloud secrets versions access latest --secret=NUROQ_API_KEY --project=nuroq-prod-anildara`
+- **Follow-ups:** Vertex AI not yet exercised by a real inference (only client
+  init); cloud DB is empty (research cycle/cron not ported to the VM yet);
+  add HTTPS (Caddy/CF Tunnel) before live; point frontend VITE_API_BASE + iOS.
 
 ---
 

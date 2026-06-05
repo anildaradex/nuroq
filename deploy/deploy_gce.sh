@@ -31,17 +31,26 @@ ZONE="${ZONE:-${REGION}-a}"
 REPO="${REPO:-nuroq}"
 IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/nuroq:latest"
 VM="${VM:-nuroq-backend}"
-MACHINE="${MACHINE:-e2-small}"
-DATA_DISK="${DATA_DISK:-nuroq-data}"
-DATA_DISK_GB="${DATA_DISK_GB:-10}"
+# e2-medium (4GB): the torch + sentence-transformers stack OOMs on e2-small (2GB),
+# which crash-loops the container.
+MACHINE="${MACHINE:-e2-medium}"
+# SQLite persists on a host-path on the boot disk (survives container restarts +
+# reboots). Avoids the separate-disk fsck-on-restart race konlet hits.
+BOOT_DISK_GB="${BOOT_DISK_GB:-30}"
+DATA_HOST_PATH="${DATA_HOST_PATH:-/var/lib/nuroq}"
 ENV_FILE="${ENV_FILE:-.env}"
 # Firewall: default to THIS machine's public IP only. Set ALLOWED_CIDR=0.0.0.0/0
 # to expose publicly (the NUROQ_API_KEY header still gates every request).
 ALLOWED_CIDR="${ALLOWED_CIDR:-$(curl -s https://api.ipify.org)/32}"
 
-# Secrets we expect in $ENV_FILE (the app reads these as env).
+# AI auth: "vertex" (VM service account, no key — default/chosen) or "apikey".
+GEMINI_AUTH="${GEMINI_AUTH:-vertex}"
+
+# Secrets we expect in $ENV_FILE (the app reads these as env). GEMINI_API_KEY is
+# only needed when GEMINI_AUTH=apikey; NUROQ_API_KEY is auto-generated if absent.
 SECRET_KEYS=(POLYGON_API_KEY ALPACA_API_KEY ALPACA_SECRET_KEY \
-             TELEGRAM_TOKEN TELEGRAM_CHAT_ID GEMINI_API_KEY NUROQ_API_KEY)
+             TELEGRAM_TOKEN TELEGRAM_CHAT_ID NUROQ_API_KEY)
+[ "$GEMINI_AUTH" = "apikey" ] && SECRET_KEYS+=(GEMINI_API_KEY)
 
 echo "▶ Project=$PROJECT_ID region=$REGION zone=$ZONE image=$IMAGE"
 [ -f "$ENV_FILE" ] || { echo "❌ $ENV_FILE not found"; exit 1; }
@@ -50,8 +59,9 @@ gcloud config set project "$PROJECT_ID" >/dev/null
 
 # ─── 1. APIs ─────────────────────────────────────────────────────────────────
 echo "▶ Enabling APIs…"
-gcloud services enable compute.googleapis.com artifactregistry.googleapis.com \
-    cloudbuild.googleapis.com secretmanager.googleapis.com >/dev/null
+APIS="compute.googleapis.com artifactregistry.googleapis.com cloudbuild.googleapis.com secretmanager.googleapis.com"
+[ "$GEMINI_AUTH" = "vertex" ] && APIS="$APIS aiplatform.googleapis.com"
+gcloud services enable $APIS >/dev/null
 
 # ─── 2. Artifact Registry ────────────────────────────────────────────────────
 gcloud artifacts repositories describe "$REPO" --location "$REGION" >/dev/null 2>&1 || \
@@ -59,14 +69,31 @@ gcloud artifacts repositories describe "$REPO" --location "$REGION" >/dev/null 2
     --location "$REGION" --description "NuroQ images"
 
 # ─── 3. Build image (Cloud Build) ────────────────────────────────────────────
-echo "▶ Building image via Cloud Build (uses .dockerignore; mlx skipped on Linux)…"
-gcloud builds submit --tag "$IMAGE" -f deploy/Dockerfile.cloud .
+if [ "${SKIP_BUILD:-0}" = "1" ]; then
+  echo "▶ SKIP_BUILD=1 — reusing existing image $IMAGE"
+else
+  echo "▶ Building image via Cloud Build (uses .dockerignore; mlx skipped on Linux)…"
+  gcloud builds submit --config deploy/cloudbuild.yaml --substitutions=_IMAGE="$IMAGE" .
+fi
 
 # ─── 4. Secrets → Secret Manager ─────────────────────────────────────────────
 echo "▶ Syncing secrets from $ENV_FILE → Secret Manager…"
 set +x
 # shellcheck disable=SC1090
 set -a; source "$ENV_FILE"; set +a
+# API auth key (gates every request). Resolve in priority order so it stays
+# STABLE across re-runs (regenerating it each deploy would break your clients):
+#   1) value in $ENV_FILE  2) existing Secret Manager version  3) generate once.
+# Never echoed — retrieve with: gcloud secrets versions access latest --secret=NUROQ_API_KEY
+if [ -z "${NUROQ_API_KEY:-}" ]; then
+  NUROQ_API_KEY=$(gcloud secrets versions access latest --secret=NUROQ_API_KEY 2>/dev/null || true)
+  if [ -z "$NUROQ_API_KEY" ]; then
+    NUROQ_API_KEY=$(openssl rand -hex 24)
+    echo "  ▶ Generated a new NUROQ_API_KEY (saved to $ENV_FILE; retrieve via Secret Manager)."
+  fi
+  grep -q '^NUROQ_API_KEY=' "$ENV_FILE" 2>/dev/null || printf '\nNUROQ_API_KEY=%s\n' "$NUROQ_API_KEY" >> "$ENV_FILE"
+fi
+export NUROQ_API_KEY
 CONTAINER_ENV=""
 for k in "${SECRET_KEYS[@]}"; do
   v="${!k:-}"
@@ -88,9 +115,25 @@ RUNTIME_ENV="\
 --container-env=NUROQ_LIVE_TRADING=0 \
 --container-env=TZ=America/New_York"
 
-# ─── 5. Persistent data disk (SQLite) ────────────────────────────────────────
-gcloud compute disks describe "$DATA_DISK" --zone "$ZONE" >/dev/null 2>&1 || \
-  gcloud compute disks create "$DATA_DISK" --size "${DATA_DISK_GB}GB" --zone "$ZONE"
+# Vertex mode: the container authenticates to Gemini via the VM's service account
+# (Application Default Credentials reached through the GCE metadata server). No
+# API key. Grant the default compute SA the aiplatform.user role.
+if [ "$GEMINI_AUTH" = "vertex" ]; then
+  RUNTIME_ENV="$RUNTIME_ENV \
+--container-env=NUROQ_GEMINI_VERTEX=1 \
+--container-env=GOOGLE_CLOUD_PROJECT=${PROJECT_ID} \
+--container-env=GOOGLE_CLOUD_LOCATION=${REGION}"
+  PROJ_NUM=$(gcloud projects describe "$PROJECT_ID" --format='get(projectNumber)')
+  VM_SA="${PROJ_NUM}-compute@developer.gserviceaccount.com"
+  echo "▶ Granting ${VM_SA} roles/aiplatform.user (Vertex)…"
+  gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+    --member="serviceAccount:${VM_SA}" --role="roles/aiplatform.user" \
+    --condition=None >/dev/null
+fi
+
+# ─── 5. (SQLite lives on a host-path on the boot disk — see DATA_HOST_PATH) ───
+#   Back it up with boot-disk snapshots:
+#     gcloud compute disks snapshot $VM --zone $ZONE
 
 # ─── 6. Firewall (:8000, source-restricted) ──────────────────────────────────
 gcloud compute firewall-rules describe nuroq-api >/dev/null 2>&1 || \
@@ -109,9 +152,10 @@ else
   # shellcheck disable=SC2086
   gcloud compute instances create-with-container "$VM" \
     --zone "$ZONE" --machine-type "$MACHINE" --tags nuroq \
-    --disk "name=${DATA_DISK},device-name=nuroq-data,mode=rw,boot=no" \
+    --scopes=https://www.googleapis.com/auth/cloud-platform \
+    --boot-disk-size="${BOOT_DISK_GB}GB" \
     --container-image "$IMAGE" \
-    --container-mount-disk "mount-path=/data,name=${DATA_DISK}" \
+    --container-mount-host-path "mount-path=/data,host-path=${DATA_HOST_PATH},mode=rw" \
     --container-restart-policy=always \
     $CONTAINER_ENV $RUNTIME_ENV
 fi
