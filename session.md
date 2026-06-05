@@ -37,7 +37,9 @@ VM + Gemini**. Did the real restructuring so NuroQ can run on Linux:
   `deploy/README.md`, `.env.cloud.example`.
 - Tests still **104/104 green**. gcloud authed (anil.dara@gmail.com), billing open.
 **🚀 DEPLOYED TO GCP (2026-06-04, LIVE):** Project **`nuroq-prod-anildara`**,
-e2-medium VM **`nuroq-backend`** @ **35.192.179.76**, region us-central1-a.
+e2-medium VM **`nuroq-backend`** @ static IP **34.9.20.141** (`nuroq-ip`), us-central1-a.
+(`update-container` stops/starts the VM → reassigns ephemeral IPs, so a reserved
+static IP was attached; baked into the script.)
 - `/health` → 200 (`ai_backend: gemini`); auth blocks w/o key (401), passes w/ key
   (200); `/api/propose-sells` → 200. Cloud Build image (mlx skipped, google-genai
   2.8.0 + torch). Gemini via **Vertex** (VM service account, no key). Secrets in
@@ -50,9 +52,22 @@ e2-medium VM **`nuroq-backend`** @ **35.192.179.76**, region us-central1-a.
   (4) Key regenerated each run → script now reuses Secret Manager key + persists
   to .env, never echoes it.
 - Retrieve API key: `gcloud secrets versions access latest --secret=NUROQ_API_KEY --project=nuroq-prod-anildara`
-- **Follow-ups:** Vertex AI not yet exercised by a real inference (only client
-  init); cloud DB is empty (research cycle/cron not ported to the VM yet);
-  add HTTPS (Caddy/CF Tunnel) before live; point frontend VITE_API_BASE + iOS.
+- **Vertex VERIFIED:** `GET /api/analyze/NVDA` → 200 with a real, NVDA-specific
+  Gemini analysis (Vertex via VM SA works end-to-end). Live agent confirmed
+  running on the VM (`/api/agent/status` running:true, 9 tickers). Triggered
+  `POST /api/research-cycle` to populate the cloud DB.
+- **⚠️ Gemini parsing caveat (FOLLOW-UP):** Gemini's output format differs from
+  the DPO-Gemma format `get_structured_data` expects → `ai_score` defaults to 50
+  and `ai_reasoning` holds the raw JSON blob. Quant rubric is unaffected (real
+  signal), but the AI tiebreaker contributes nothing until the parser/prompt is
+  tuned for Gemini. Worth fixing next.
+- **In-process scheduler added** (`scheduler.py`, `NUROQ_INPROC_SCHEDULER=1`):
+  daemon threads run research @ 03:30 ET + sell-proposals @ 08:00 ET (weekdays) —
+  replaces launchd cron in the container. `/health` now reports scheduler state.
+  Tests 104→108. Deploy uses **unique image tags** (vYYYYMMDD-HHMMSS) so
+  `update-container` reliably re-pulls (preserves VM IP + /data).
+- **Still TODO:** fix Gemini score parsing; HTTPS (Caddy/CF Tunnel) before live;
+  frontend VITE_API_BASE + iOS re-point; live trading stays OFF.
 
 ---
 

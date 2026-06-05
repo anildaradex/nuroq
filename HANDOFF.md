@@ -24,13 +24,16 @@ detail in `CLOUD_MIGRATION.md` §Status and `deploy/README.md`):
 - Tests 104/104 green.
 
 **🚀 LIVE ON GCP (2026-06-04).** Project `nuroq-prod-anildara`, e2-medium VM
-`nuroq-backend` @ **35.192.179.76** (us-central1-a). Gemini via **Vertex** (VM
+`nuroq-backend` @ **static IP 34.9.20.141** (`nuroq-ip`, us-central1-a). Gemini via **Vertex** (VM
 service account — no API key). Secrets in Secret Manager; SQLite on host-path
 `/var/lib/nuroq`. Verified: `/health` 200, auth 401→200, `/api/propose-sells` 200.
 - API key: `gcloud secrets versions access latest --secret=NUROQ_API_KEY --project=nuroq-prod-anildara` (sent as `X-NuroQ-Key`). Firewall :8000 → deployer IP only.
 - Redeploy: `SKIP_BUILD=1 PROJECT_ID=nuroq-prod-anildara ./deploy/deploy_gce.sh` (rebuild: drop SKIP_BUILD). Idempotent.
 - Deploy gotchas already fixed in the script: cloudbuild.yaml (custom Dockerfile path), e2-medium (e2-small OOMs torch), host-path mount (separate-disk fsck race), compute-SA roles (artifactregistry.reader + aiplatform.user), stable API key.
-- **NOT done:** real Vertex inference smoke test; cloud DB empty (port research_cycle/premarket cron to the VM); HTTPS front (Caddy/CF Tunnel) before live trading; frontend VITE_API_BASE + iOS re-point. Live trading still OFF.
+- ✅ Vertex inference smoke-tested (`/api/analyze/NVDA` → real Gemini analysis).
+- ✅ Cron ported: `scheduler.py` in-process scheduler (`NUROQ_INPROC_SCHEDULER=1`) runs research @ 03:30 ET + sell-proposals @ 08:00 ET weekdays; `/health` reports it. Deploy uses unique image tags so `update-container` re-pulls (stable IP + /data).
+- **⚠️ FOLLOW-UP — Gemini score parsing:** Gemini's output format differs from DPO-Gemma's, so `get_structured_data` defaults `ai_score` to 50 (quant unaffected). Tune the prompt/parser in `dashboard.py` so the AI tiebreaker actually contributes. This is the top open item.
+- **NOT done:** Gemini parser fix (above); HTTPS front (Caddy/CF Tunnel) before live; frontend VITE_API_BASE + iOS re-point. Live trading still OFF.
 
 ---
 

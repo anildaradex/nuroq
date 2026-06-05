@@ -41,6 +41,9 @@ MACHINE="${MACHINE:-e2-medium}"
 # reboots). Avoids the separate-disk fsck-on-restart race konlet hits.
 BOOT_DISK_GB="${BOOT_DISK_GB:-30}"
 DATA_HOST_PATH="${DATA_HOST_PATH:-/var/lib/nuroq}"
+# Static external IP — `update-container` stops/starts the VM, which would
+# reassign an ephemeral IP on every deploy. A reserved address stays put.
+STATIC_IP_NAME="${STATIC_IP_NAME:-nuroq-ip}"
 ENV_FILE="${ENV_FILE:-.env}"
 # Firewall: default to THIS machine's public IP only. Set ALLOWED_CIDR=0.0.0.0/0
 # to expose publicly (the NUROQ_API_KEY header still gates every request).
@@ -139,6 +142,10 @@ fi
 #   Back it up with boot-disk snapshots:
 #     gcloud compute disks snapshot $VM --zone $ZONE
 
+# ─── 5b. Static external IP (stable across deploys) ──────────────────────────
+gcloud compute addresses describe "$STATIC_IP_NAME" --region "$REGION" >/dev/null 2>&1 || \
+  gcloud compute addresses create "$STATIC_IP_NAME" --region "$REGION"
+
 # ─── 6. Firewall (:8000, source-restricted) ──────────────────────────────────
 gcloud compute firewall-rules describe nuroq-api >/dev/null 2>&1 || \
   gcloud compute firewall-rules create nuroq-api \
@@ -157,6 +164,7 @@ else
   gcloud compute instances create-with-container "$VM" \
     --zone "$ZONE" --machine-type "$MACHINE" --tags nuroq \
     --scopes=https://www.googleapis.com/auth/cloud-platform \
+    --address="$STATIC_IP_NAME" \
     --boot-disk-size="${BOOT_DISK_GB}GB" \
     --container-image "$IMAGE" \
     --container-mount-host-path "mount-path=/data,host-path=${DATA_HOST_PATH},mode=rw" \
