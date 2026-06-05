@@ -1,0 +1,15 @@
+# Cloud Build config for the NuroQ cloud image. Needed because the cloud
+# Dockerfile lives at deploy/Dockerfile.cloud (not the repo-root Dockerfile,
+# which targets the Mac/Gradio flow and installs MLX). `gcloud builds submit
+# --tag` can only use a root Dockerfile, so we point at ours explicitly here.
+#
+# Invoked by deploy/deploy_gce.sh:
+#   gcloud builds submit --config deploy/cloudbuild.yaml \
+#       --substitutions=_IMAGE="$IMAGE" .
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-f', 'deploy/Dockerfile.cloud', '-t', '${_IMAGE}', '.']
+images:
+  - '${_IMAGE}'
+options:
+  machineType: 'E2_HIGHCPU_8'   # faster build for the torch/sentence-transformers layer

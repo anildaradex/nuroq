@@ -80,6 +80,27 @@ def _autostart_agent() -> None:
         print(f"[autostart] ⚠️  Agent autostart failed: {e}")
 
 
+# In-process daily scheduler (cloud only). On the Mac these run as launchd crons;
+# the single cloud container runs them itself when NUROQ_INPROC_SCHEDULER=1.
+_SCHEDULER_ON = os.getenv("NUROQ_INPROC_SCHEDULER", "0") == "1"
+_SCHEDULER_JOBS = 0
+
+
+@app.on_event("startup")
+def _start_scheduler() -> None:
+    global _SCHEDULER_JOBS
+    if not _SCHEDULER_ON:
+        return
+    try:
+        from scheduler import start_inproc_scheduler
+        _SCHEDULER_JOBS = start_inproc_scheduler([
+            ("research",  3, 30, dash.trigger_research_cycle_async),
+            ("proposals", 8,  0, dash.log_sell_proposals),
+        ], dash.logger)
+    except Exception as e:
+        print(f"[scheduler] ⚠️  failed to start: {e}")
+
+
 app.add_middleware(
     CORSMiddleware,
     # Vite dev (5173), Capacitor iOS (capacitor://localhost), Capacitor Android
@@ -89,6 +110,72 @@ app.add_middleware(
     allow_headers=["*"],
     allow_credentials=True,
 )
+
+
+# ─── API-key auth ────────────────────────────────────────────────────────────
+#
+# On a LAN this backend was unauthenticated. Exposed on a public cloud URL (GCP)
+# that is unsafe — anyone could read your portfolio or place trades. When
+# NUROQ_API_KEY is set, every request must carry a matching `X-NuroQ-Key` header
+# (or `?api_key=` for convenience). When it is UNSET, auth is disabled (preserves
+# the local/LAN dev experience). The health check and CORS preflight are always
+# open so uptime probes and browsers work.
+_API_KEY = os.getenv("NUROQ_API_KEY")
+# Exempt: health/probes, the docs, the SPA shell + its static assets, and the
+# tunnel-url helper. The SPA's own /api/* calls are NOT exempt — they auth via
+# the cookie dropped below.
+_AUTH_EXEMPT_PATHS = {"/health", "/api/health", "/", "/index.html",
+                      "/docs", "/openapi.json", "/redoc", "/tunnel-url", "/favicon.ico"}
+_AUTH_EXEMPT_PREFIXES = ("/assets/",)   # built SPA bundles (JS/CSS)
+
+
+@app.middleware("http")
+async def _api_key_guard(request, call_next):
+    from starlette.responses import JSONResponse
+    if _API_KEY:
+        path = request.url.path
+        q = request.query_params.get("api_key")
+        presented = (request.headers.get("x-nuroq-key") or q
+                     or request.cookies.get("nuroq_key"))
+        exempt = (request.method == "OPTIONS" or path in _AUTH_EXEMPT_PATHS
+                  or path.startswith(_AUTH_EXEMPT_PREFIXES))
+        if not exempt and presented != _API_KEY:
+            return JSONResponse(status_code=401, content={"detail": "Invalid or missing API key."})
+        response = await call_next(request)
+        # Visiting any URL with a valid ?api_key= drops a cookie so the served
+        # SPA's same-origin /api/* calls authenticate automatically — open
+        # https://<tunnel>/?api_key=KEY once and the whole UI works.
+        if q and q == _API_KEY:
+            response.set_cookie("nuroq_key", _API_KEY, max_age=86400,
+                                httponly=True, samesite="lax")
+        return response
+    return await call_next(request)
+
+
+@app.get("/health")
+def health():
+    """Unauthenticated liveness probe for GCE/load-balancer health checks."""
+    return {
+        "ok": True, "service": "nuroq",
+        "ai_backend": os.getenv("NUROQ_AI_BACKEND", "gemma"),
+        "scheduler": _SCHEDULER_ON, "scheduler_jobs": _SCHEDULER_JOBS,
+    }
+
+
+@app.get("/tunnel-url")
+def tunnel_url():
+    """Returns the current Cloudflare quick-tunnel https URL (cloudflared writes
+    it to /data/cloudflared.log). Unauthenticated — the URL is meant to be
+    visited, and the app behind it is still key/cookie gated."""
+    import re, pathlib
+    log = pathlib.Path("/data/cloudflared.log")
+    if not log.exists():
+        return {"url": None, "note": "no tunnel log yet (named tunnel, or still starting)"}
+    try:
+        m = re.findall(r"https://[a-z0-9-]+\.trycloudflare\.com", log.read_text())
+        return {"url": m[-1] if m else None}
+    except Exception as e:
+        return {"url": None, "note": str(e)}
 
 
 # ─── Schemas ─────────────────────────────────────────────────────────────────
@@ -314,7 +401,7 @@ def today_cards():
 
     news_24h = {}
     try:
-        with sqlite3.connect("nuroq.db") as conn:
+        with sqlite3.connect(dash.DB_PATH) as conn:
             rows = conn.execute(
                 "SELECT classification, COUNT(*) FROM news_cache "
                 "WHERE ingested_at > ? AND classification != 'NEUTRAL' "
@@ -353,7 +440,7 @@ def today_feed():
     events: list[FeedEventResp] = []
     day_ago = time.time() - 86400
     try:
-        with sqlite3.connect("nuroq.db") as conn:
+        with sqlite3.connect(dash.DB_PATH) as conn:
             for ts, ticker, direction, sb, sa, price, action, _notes in conn.execute(
                 "SELECT ts, ticker, direction, score_before, score_after, price, action, notes "
                 "FROM live_triggers WHERE ts > ? ORDER BY ts DESC LIMIT 30",
@@ -590,7 +677,7 @@ class AskResp(BaseModel):
 def ask(req: AskReq):
     """
     Free-form 'AI mode' Q&A about a ticker (the search bar under the chart).
-    Grounds Gemma with price action + news + SEC-filing RAG + fundamentals.
+    Grounds the AI with price action + news + SEC-filing RAG + fundamentals.
     Runs LLM inference — allow several seconds.
     """
     if not req.ticker.strip():
@@ -725,7 +812,7 @@ def trade_setup(ticker: str):
     Used by Watchlist row "Trade" buttons so the user can click a ticker
     and immediately get a reviewed, sized order without running full analysis.
 
-    Faster than /api/analyze/{ticker} (no Gemma inference). Uses cached daily
+    Faster than /api/analyze/{ticker} (no AI inference). Uses cached daily
     bars + the same calculate_sizing helper the live agent uses.
     """
     t = ticker.upper().strip()
@@ -775,7 +862,7 @@ class AnalyzeResp(BaseModel):
 @app.get("/api/analyze/{ticker}", response_model=AnalyzeResp)
 def analyze(ticker: str):
     """
-    Deep analysis: technicals + fundamentals + Gemma reasoning + trade setup
+    Deep analysis: technicals + fundamentals + AI reasoning + trade setup
     + chart data. Runs the full LLM inference, so allow 3-5 seconds.
     """
     ticker = ticker.upper().strip()
@@ -949,7 +1036,7 @@ class AgentLogRow(BaseModel):
 @app.get("/api/agent/log", response_model=list[AgentLogRow])
 def agent_log(limit: int = 100):
     try:
-        with sqlite3.connect("nuroq.db") as conn:
+        with sqlite3.connect(dash.DB_PATH) as conn:
             rows = conn.execute(
                 "SELECT ts, ticker, direction, score_before, score_after, "
                 "price, action, notes FROM live_triggers "

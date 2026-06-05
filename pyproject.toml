@@ -6,8 +6,15 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "gradio>=6.3.0",
-    "mlx-lm>=0.29.1",
-    "mlx-lm-lora>=0.7.0",
+    # MLX is Apple-Silicon only. The PEP 508 markers make `uv`/pip install these
+    # ONLY on macOS — on a Linux/GCP container they are silently skipped, so the
+    # cloud image builds without them. The Gemma code path is lazy-imported and
+    # only runs when NUROQ_AI_BACKEND=gemma (the Mac default); the cloud uses
+    # NUROQ_AI_BACKEND=gemini (google-genai below). See analyst_backends.py.
+    "mlx-lm>=0.29.1; sys_platform == 'darwin'",
+    "mlx-lm-lora>=0.7.0; sys_platform == 'darwin'",
+    # Cloud AI tiebreaker backend (works on Linux + macOS).
+    "google-genai>=1.0.0",
     "python-telegram-bot>=22.5",
     "yfinance>=1.0",
     "python-dotenv>=1.0.1",

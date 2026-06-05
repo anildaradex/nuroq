@@ -10,6 +10,34 @@
 
 ---
 
+## Session 6b (2026-06-04) — cloud migration: code made GCP-ready
+
+Decided **Compute Engine VM + Gemini**. Restructured NuroQ to run on Linux (full
+detail in `CLOUD_MIGRATION.md` §Status and `deploy/README.md`):
+- **MLX unblocked** — `pyproject.toml` markers (`sys_platform=='darwin'`) + lazy
+  import in `dashboard.py`. `import dashboard`/`backend.api` verified with no MLX.
+- **`analyst_backends.py`** — `GeminiBackend` (google-genai) behind the existing
+  `analyst.analyze()` chokepoint; `NUROQ_AI_BACKEND` selects gemma|gemini.
+- **`NUROQ_DB_PATH`** everywhere; **`X-NuroQ-Key`** auth middleware + `/health`.
+- **`deploy/`** — `Dockerfile.cloud`, idempotent `deploy_gce.sh`, `README.md`,
+  `.env.cloud.example`; hardened `.dockerignore`.
+- Tests 104/104 green.
+
+**🚀 LIVE ON GCP (2026-06-04).** Project `nuroq-prod-anildara`, e2-medium VM
+`nuroq-backend` @ **static IP 34.9.20.141** (`nuroq-ip`, us-central1-a). Gemini via **Vertex** (VM
+service account — no API key). Secrets in Secret Manager; SQLite on host-path
+`/var/lib/nuroq`. Verified: `/health` 200, auth 401→200, `/api/propose-sells` 200.
+- API key: `gcloud secrets versions access latest --secret=NUROQ_API_KEY --project=nuroq-prod-anildara` (sent as `X-NuroQ-Key`). Firewall :8000 → deployer IP only.
+- Redeploy: `SKIP_BUILD=1 PROJECT_ID=nuroq-prod-anildara ./deploy/deploy_gce.sh` (rebuild: drop SKIP_BUILD). Idempotent.
+- Deploy gotchas already fixed in the script: cloudbuild.yaml (custom Dockerfile path), e2-medium (e2-small OOMs torch), host-path mount (separate-disk fsck race), compute-SA roles (artifactregistry.reader + aiplatform.user), stable API key.
+- ✅ Vertex inference smoke-tested (`/api/analyze/NVDA` → real Gemini analysis).
+- ✅ Cron ported: `scheduler.py` in-process scheduler (`NUROQ_INPROC_SCHEDULER=1`) runs research @ 03:30 ET + sell-proposals @ 08:00 ET weekdays; `/health` reports it. Deploy uses unique image tags so `update-container` re-pulls (stable IP + /data).
+- ✅ Gemini score parsing FIXED: scoring path uses Gemini structured output (JSON schema, 2048 tok); `structured` flag threaded through `analyst.analyze()` (Ask-AI stays free-text). Tests 110.
+- ✅ CI/CD: `.github/workflows/deploy.yml` auto-deploys on push via Workload Identity Federation (no stored key). SA `gh-deployer`, WIF pool `github-pool`. See deploy/README.md.
+- **NOT done:** confirm first Actions run is green; HTTPS front (Caddy/CF Tunnel) before live; frontend VITE_API_BASE + iOS re-point. Live trading still OFF.
+
+---
+
 ## Session 6 (2026-06-03) — §475 mode + PDT-rule context
 
 **North-star (stated by user):** make NuroQ a fully autonomous live-trading app —

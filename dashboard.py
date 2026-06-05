@@ -18,8 +18,10 @@ import sqlite3
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import date, timedelta, datetime
-from mlx_lm import load, generate
-from mlx_lm.sample_utils import make_sampler
+# NOTE: MLX (mlx_lm) is Apple-Silicon only and is imported LAZILY inside
+# EnsembleAnalyst (only when NUROQ_AI_BACKEND=gemma). This keeps `import dashboard`
+# working on Linux/GCP, where the cloud Gemini backend (analyst_backends.py) runs
+# instead. Do NOT add a top-level `from mlx_lm import ...` here.
 import asyncio
 import threading
 from dotenv import load_dotenv
@@ -31,7 +33,7 @@ from event_stream import MarketStreamer
 
 # --- New modular imports ---
 from data_fetcher import (
-    PolygonRateLimiter, AppCache,
+    PolygonRateLimiter, AppCache, DB_PATH,
     rate_limiter, news_cache, funds_cache,
     fundamentals_cache, ai_score_cache, watchlist_today, live_triggers,
     history_cache,
@@ -124,21 +126,44 @@ class EnsembleAnalyst:
         self.mode = mode
         self.models = {}
         self.tokenizers = {}
+        # Backend selector. "gemma" = local MLX (Apple Silicon, the Mac default);
+        # "gemini" (or any non-gemma value) routes to a cloud backend in
+        # analyst_backends.py so the same analyze()/get_consensus() logic runs
+        # unchanged on a Linux/GCP box. Read once at construction.
+        self.backend = os.getenv("NUROQ_AI_BACKEND", "gemma").strip().lower()
+        self._remote = None  # lazily-built cloud backend (gemini, …)
 
     def load_all(self):
-        logger.log("🚀 Loading Gemma model...")
-        cfg = MODELS_CFG["gemma"]
-        m, t = load(cfg["path"], adapter_path=cfg["adapter"])
-        self.models["gemma"] = m
-        self.tokenizers["gemma"] = t
+        if self.backend == "gemma":
+            logger.log("🚀 Loading Gemma model (MLX)...")
+            from mlx_lm import load  # lazy: MLX is Apple-Silicon only
+            cfg = MODELS_CFG["gemma"]
+            m, t = load(cfg["path"], adapter_path=cfg["adapter"])
+            self.models["gemma"] = m
+            self.tokenizers["gemma"] = t
+        else:
+            from analyst_backends import make_backend
+            self._remote = make_backend(self.backend)
+            logger.log(f"🚀 AI backend ready: {self._remote.describe()}")
 
-    def analyze(self, prompt, model_key="gemma"):
+    def analyze(self, prompt, model_key="gemma", structured=False):
+        # Cloud path: delegate raw generation to the configured backend. No
+        # Metal command buffer to serialize, so no _gemma_lock here (the backend
+        # bounds its own concurrency). `structured=True` (scoring) asks the cloud
+        # backend for schema-constrained JSON; Gemma ignores it (DPO-trained format).
+        if self.backend != "gemma":
+            if self._remote is None:
+                self.load_all()
+            return self._remote.generate(prompt, structured=structured)
+
+        # Local MLX path (unchanged behavior). Lazy import so this module loads
+        # on Linux. All Gemma inferences MUST go through _gemma_lock — see the
+        # class docstring (Metal command-buffer collisions).
+        from mlx_lm import generate
+        from mlx_lm.sample_utils import make_sampler
         m = self.models["gemma"]
         t = self.tokenizers["gemma"]
         sampler = make_sampler(temp=0.0)
-        # All Gemma inferences (consensus path AND the single-mode raw call
-        # paths in analyze_stock / analyze_single_ticker_data) MUST go through
-        # this lock. See _gemma_lock docstring above.
         with EnsembleAnalyst._gemma_lock:
             response = generate(
                 m, t,
@@ -149,11 +174,11 @@ class EnsembleAnalyst:
         return response
 
     def get_consensus(self, ticker, prompt):
-        """No consensus check needed. Returns Gemma analysis directly."""
-        logger.log(f"[{ticker}] ▶ Step 5a: Running Gemma inference...")
-        res = self.analyze(prompt, "gemma")
+        """Returns the AI analysis directly (Gemma locally, Gemini in the cloud)."""
+        logger.log(f"[{ticker}] ▶ Step 5a: Running AI inference...")
+        res = self.analyze(prompt, "gemma", structured=True)
         score = self.extract_score(res)
-        logger.log(f"[{ticker}]    Gemma result → score={score}")
+        logger.log(f"[{ticker}]    AI result → score={score}")
 
         rating = self.get_structured_data(res).get("rating", "HOLD")
         
@@ -167,7 +192,7 @@ class EnsembleAnalyst:
         if old_rating != rating:
             logger.log(f"[{ticker}] 🛡️ Sanity Guard: Overriding {old_rating} to {rating} (Score {score} too low/high)")
 
-        combined_reasoning = f"--- GEMMA ({score}) ---\n{res}"
+        combined_reasoning = f"--- AI ({score}) ---\n{res}"
         
         return {
             "is_consensus": True,
@@ -253,8 +278,10 @@ SELECTED_MODEL_KEY = "gemma"
 MODEL_PATH = MODELS_CFG["gemma"]["path"]
 ADAPTER_PATH = None
 
-model = analyst.models["gemma"]
-tokenizer = analyst.tokenizers["gemma"]
+# Legacy module-level handles (kept for backward-compat; inference goes through
+# analyst.analyze()). Empty on cloud backends, so use .get() — never KeyError.
+model = analyst.models.get("gemma")
+tokenizer = analyst.tokenizers.get("gemma")
 
 
 class TradeGatekeeper:
@@ -526,7 +553,7 @@ class TradeGatekeeper:
             logger.log(f"⚠️ Notification dispatch failed: {e}", level="WARNING")
 
 class ShadowExecutor:
-    def __init__(self, db_path="nuroq.db"):
+    def __init__(self, db_path=DB_PATH):
         self.db_path = db_path
         self._init_db()
 
@@ -563,7 +590,7 @@ class ShadowExecutor:
         return f"✅ [SHADOW MODE] Simulated BUY of {shares} shares of {ticker} at ${price}."
 
 class PortfolioManager:
-    def __init__(self, db_path="nuroq.db"):
+    def __init__(self, db_path=DB_PATH):
         self.db_path = db_path
         self.cols = ["Ticker", "Shares", "Avg Price", "Current Price", "Total Value", "PnL %", "Stop Loss", "Take Profit", "AI Score", "AI Rating", "Entry Date"]
         # Per-ticker alert dedup: tracks which alert kind ("TP"/"SL") we've
@@ -1423,7 +1450,7 @@ def render_health_snapshot() -> str:
         rows.append(("🔴", "Alpaca", f"Error: {e}"))
 
     # ─── SQLite cache sizes ───
-    with sqlite3.connect("nuroq.db") as conn:
+    with sqlite3.connect(DB_PATH) as conn:
         def _count(table):
             try:
                 row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
@@ -1576,7 +1603,7 @@ def render_today_cards() -> str:
 
     # News shocks today
     try:
-        with sqlite3.connect("nuroq.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             day_ago = time.time() - 86400
             rows = conn.execute(
                 "SELECT classification, COUNT(*) FROM news_cache "
@@ -1609,7 +1636,7 @@ def render_channel_bar() -> str:
     events = []
     day_ago = time.time() - 86400
     try:
-        with sqlite3.connect("nuroq.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             # Live triggers
             for ts, ticker, direction, sb, sa, price, action, notes in conn.execute(
                 "SELECT ts, ticker, direction, score_before, score_after, price, action, notes "
@@ -2061,7 +2088,7 @@ def render_next_actions() -> str:
         if not df.empty:
             held = [str(t).upper() for t in df["Ticker"].tolist()]
         if held:
-            with sqlite3.connect("nuroq.db") as conn:
+            with sqlite3.connect(DB_PATH) as conn:
                 day_ago = now - 86400
                 placeholders = ",".join("?" * len(held))
                 rows = conn.execute(
@@ -2514,7 +2541,7 @@ def _describe_price_action(ticker: str, bars: list) -> str:
 def ask_about_ticker(ticker: str, question: str) -> dict:
     """
     Free-form Q&A about a ticker — the 'AI mode' search bar under the chart.
-    Grounds Gemma with: recent price action, cached + live news, SEC-filing RAG
+    Grounds the AI with: recent price action, cached + live news, SEC-filing RAG
     context relevant to the question, and fundamentals. Returns a dict:
       {ticker, question, answer, sources: [..], grounded: bool}
 
@@ -2558,7 +2585,7 @@ def ask_about_ticker(ticker: str, question: str) -> dict:
     #    NewsPoller already ingested. Live Polygon is a bounded fallback only.
     news_ctx = ""
     try:
-        with sqlite3.connect("nuroq.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             rows = conn.execute(
                 "SELECT headline, classification, datetime(ingested_at,'unixepoch','localtime') "
                 "FROM news_cache WHERE ticker = ? ORDER BY ingested_at DESC LIMIT 8",
@@ -2730,7 +2757,7 @@ def analyze_single_ticker_data(ticker, pre_fetched_data=None, pre_fetched_funds=
         if not is_consensus:
             response = "{\"reasoning\": \"⚠️ ENSEMBLE WARNING: NO CONSENSUS FOUND.\", \"considerations\": [], \"metrics\": {}, \"rating\": \"HOLD\", \"score\": 50}"
     else:
-        response = analyst.analyze(prompt)
+        response = analyst.analyze(prompt, structured=True)
 
     # 4. Extract and Log
     structured_data = analyst.get_structured_data(response)
@@ -3072,7 +3099,7 @@ def analyze_stock(ticker, is_auto=False):
         # Route through analyst.analyze() so the EnsembleAnalyst._gemma_lock
         # serializes this with every other Gemma call site (prevents Metal
         # command-buffer collision crashes during volatile market-open minutes).
-        response = analyst.analyze(prompt)
+        response = analyst.analyze(prompt, structured=True)
         analysis_data = analyst.get_structured_data(response)
         reasoning = analysis_data.get("reasoning", "")
         score = int(analysis_data.get("score", 50))

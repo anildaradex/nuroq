@@ -18,7 +18,72 @@
 
 ---
 
-## Current session — Session 6 — 2026-06-03 (IN PROGRESS)
+## Current session — Session 6 — 2026-06-03 → 06-04 (IN PROGRESS)
+
+**Cloud migration — code made GCP-ready (2026-06-04):** Decided **Compute Engine
+VM + Gemini**. Did the real restructuring so NuroQ can run on Linux:
+- **MLX unblocked:** `pyproject.toml` gates `mlx-lm`/`mlx-lm-lora` behind
+  `sys_platform=='darwin'` (Linux skips them); `dashboard.py` lazy-imports MLX
+  (no top-level `from mlx_lm import`). Verified `import dashboard` + `backend.api`
+  on a simulated no-MLX Linux env.
+- **Swappable AI backend:** new `analyst_backends.py` (`GeminiBackend` via
+  `google-genai`); `EnsembleAnalyst` routes through `NUROQ_AI_BACKEND` (gemma=local
+  MLX / gemini=cloud) at the single `analyze()` chokepoint — same parse/consensus.
+- **12-factor:** all DB access via `NUROQ_DB_PATH` (dashboard.py + backend/api.py
+  hardcoded `nuroq.db` removed). **API auth:** `X-NuroQ-Key` middleware + open
+  `/health`. Hardened `.dockerignore`.
+- **Deploy scaffolding:** `deploy/Dockerfile.cloud` (no MLX, Gemini, TZ=ET),
+  `deploy/deploy_gce.sh` (idempotent build→Secret Manager→disk→VM→firewall),
+  `deploy/README.md`, `.env.cloud.example`.
+- Tests still **104/104 green**. gcloud authed (anil.dara@gmail.com), billing open.
+**🚀 DEPLOYED TO GCP (2026-06-04, LIVE):** Project **`nuroq-prod-anildara`**,
+e2-medium VM **`nuroq-backend`** @ static IP **34.9.20.141** (`nuroq-ip`), us-central1-a.
+(`update-container` stops/starts the VM → reassigns ephemeral IPs, so a reserved
+static IP was attached; baked into the script.)
+- `/health` → 200 (`ai_backend: gemini`); auth blocks w/o key (401), passes w/ key
+  (200); `/api/propose-sells` → 200. Cloud Build image (mlx skipped, google-genai
+  2.8.0 + torch). Gemini via **Vertex** (VM service account, no key). Secrets in
+  Secret Manager. SQLite on host-path `/var/lib/nuroq` (mounted /data).
+- **Gotchas hit & fixed:** (1) `gcloud builds submit --tag -f` invalid → added
+  `deploy/cloudbuild.yaml` pointing at `Dockerfile.cloud`. (2) e2-small (2GB) +
+  separate-disk `--container-mount-disk` → OOM + konlet fsck-on-restart race
+  (crash loop). Fixed: **e2-medium (4GB)** + **host-path mount** on a 30GB boot
+  disk. (3) Granted compute SA `artifactregistry.reader` + `aiplatform.user`.
+  (4) Key regenerated each run → script now reuses Secret Manager key + persists
+  to .env, never echoes it.
+- Retrieve API key: `gcloud secrets versions access latest --secret=NUROQ_API_KEY --project=nuroq-prod-anildara`
+- **Vertex VERIFIED:** `GET /api/analyze/NVDA` → 200 with a real, NVDA-specific
+  Gemini analysis (Vertex via VM SA works end-to-end). Live agent confirmed
+  running on the VM (`/api/agent/status` running:true, 9 tickers). Triggered
+  `POST /api/research-cycle` to populate the cloud DB.
+- **⚠️ Gemini parsing caveat (FOLLOW-UP):** Gemini's output format differs from
+  the DPO-Gemma format `get_structured_data` expects → `ai_score` defaults to 50
+  and `ai_reasoning` holds the raw JSON blob. Quant rubric is unaffected (real
+  signal), but the AI tiebreaker contributes nothing until the parser/prompt is
+  tuned for Gemini. Worth fixing next.
+- **In-process scheduler added** (`scheduler.py`, `NUROQ_INPROC_SCHEDULER=1`):
+  daemon threads run research @ 03:30 ET + sell-proposals @ 08:00 ET (weekdays) —
+  replaces launchd cron in the container. `/health` now reports scheduler state.
+  Tests 104→108. Deploy uses **unique image tags** (vYYYYMMDD-HHMMSS) so
+  `update-container` reliably re-pulls (preserves VM IP + /data).
+- **Gemini parsing FIXED (2026-06-05):** scoring path now uses Gemini structured
+  output (JSON schema + 2048-tok cap) so `ai_score` parses (was defaulting to 50
+  — verbose output truncated the JSON before the score key). Threaded a
+  `structured` flag through `analyst.analyze()` → only scoring paths (get_consensus,
+  analyze_single_ticker_data, analyze_stock) get JSON mode; Ask-AI stays free-text.
+  Tests 108→110 (`TestGeminiStructuredOutput`).
+- **GitHub Actions auto-deploy ADDED (2026-06-05):** `.github/workflows/deploy.yml`
+  deploys to the VM on push (build Dockerfile.cloud → push AR → update-container).
+  Auth via **Workload Identity Federation — no stored key.** Set up in GCP:
+  WIF pool `github-pool` + provider `github-provider` (owner-restricted),
+  SA `gh-deployer` (artifactregistry.writer + compute.instanceAdmin.v1 +
+  serviceAccountUser), repo bound via workloadIdentityUser. See deploy/README.md.
+- **Still TODO:** verify the first Actions run succeeds; HTTPS (Caddy/CF Tunnel)
+  before live; frontend VITE_API_BASE + iOS re-point; live trading stays OFF.
+
+---
+
+## Session 6 — 2026-06-03 (earlier)
 
 **§475(f) mode + PDT-rule context (tax/regulatory):**
 - Reviewed two user claims for accuracy (web-verified): (1) **PDT rule abolished**
