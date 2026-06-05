@@ -29,7 +29,10 @@ cd "$(dirname "$0")/.."
 REGION="${REGION:-us-central1}"
 ZONE="${ZONE:-${REGION}-a}"
 REPO="${REPO:-nuroq}"
-IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/nuroq:latest"
+# Unique tag per build so `update-container` on the existing VM reliably re-pulls
+# (konlet won't re-fetch an unchanged :latest). Override TAG to redeploy a prior build.
+TAG="${TAG:-v$(date +%Y%m%d-%H%M%S)}"
+IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/nuroq:${TAG}"
 VM="${VM:-nuroq-backend}"
 # e2-medium (4GB): the torch + sentence-transformers stack OOMs on e2-small (2GB),
 # which crash-loops the container.
@@ -112,6 +115,7 @@ RUNTIME_ENV="\
 --container-env=NUROQ_DB_PATH=/data/nuroq.db \
 --container-env=NUROQ_BACKGROUND_SERVICES=1 \
 --container-env=NUROQ_AUTOSTART_AGENT=1 \
+--container-env=NUROQ_INPROC_SCHEDULER=1 \
 --container-env=NUROQ_LIVE_TRADING=0 \
 --container-env=TZ=America/New_York"
 

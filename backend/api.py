@@ -80,6 +80,27 @@ def _autostart_agent() -> None:
         print(f"[autostart] ⚠️  Agent autostart failed: {e}")
 
 
+# In-process daily scheduler (cloud only). On the Mac these run as launchd crons;
+# the single cloud container runs them itself when NUROQ_INPROC_SCHEDULER=1.
+_SCHEDULER_ON = os.getenv("NUROQ_INPROC_SCHEDULER", "0") == "1"
+_SCHEDULER_JOBS = 0
+
+
+@app.on_event("startup")
+def _start_scheduler() -> None:
+    global _SCHEDULER_JOBS
+    if not _SCHEDULER_ON:
+        return
+    try:
+        from scheduler import start_inproc_scheduler
+        _SCHEDULER_JOBS = start_inproc_scheduler([
+            ("research",  3, 30, dash.trigger_research_cycle_async),
+            ("proposals", 8,  0, dash.log_sell_proposals),
+        ], dash.logger)
+    except Exception as e:
+        print(f"[scheduler] ⚠️  failed to start: {e}")
+
+
 app.add_middleware(
     CORSMiddleware,
     # Vite dev (5173), Capacitor iOS (capacitor://localhost), Capacitor Android
@@ -116,7 +137,11 @@ async def _api_key_guard(request, call_next):
 @app.get("/health")
 def health():
     """Unauthenticated liveness probe for GCE/load-balancer health checks."""
-    return {"ok": True, "service": "nuroq", "ai_backend": os.getenv("NUROQ_AI_BACKEND", "gemma")}
+    return {
+        "ok": True, "service": "nuroq",
+        "ai_backend": os.getenv("NUROQ_AI_BACKEND", "gemma"),
+        "scheduler": _SCHEDULER_ON, "scheduler_jobs": _SCHEDULER_JOBS,
+    }
 
 
 # ─── Schemas ─────────────────────────────────────────────────────────────────

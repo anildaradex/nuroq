@@ -1627,5 +1627,39 @@ class TestSellProposals(unittest.TestCase):
         dashboard._proposed_sell_keys.clear()
 
 
+class TestScheduler(unittest.TestCase):
+    """In-process cloud scheduler date math (scheduler._next_fire). Added 2026-06-04."""
+
+    def _et(self, y, m, d, hh, mm):
+        from scheduler import ET
+        from datetime import datetime as dt
+        return dt(y, m, d, hh, mm, tzinfo=ET)
+
+    def test_fires_later_today_when_time_not_passed(self):
+        from scheduler import _next_fire
+        now = self._et(2026, 6, 4, 1, 0)   # Thursday 01:00 ET, before 03:30
+        nxt = _next_fire(3, 30, now=now)
+        self.assertEqual((nxt.month, nxt.day, nxt.hour, nxt.minute), (6, 4, 3, 30))
+
+    def test_rolls_to_next_day_when_time_passed(self):
+        from scheduler import _next_fire
+        now = self._et(2026, 6, 4, 9, 0)   # Thursday 09:00, after 03:30
+        nxt = _next_fire(3, 30, now=now)
+        self.assertEqual((nxt.month, nxt.day), (6, 5))  # Friday
+
+    def test_skips_weekend_to_monday(self):
+        from scheduler import _next_fire
+        now = self._et(2026, 6, 5, 9, 0)   # Friday 09:00 → next is Mon Jun 8
+        nxt = _next_fire(3, 30, now=now)
+        self.assertEqual(nxt.weekday(), 0)               # Monday
+        self.assertEqual((nxt.month, nxt.day), (6, 8))
+
+    def test_saturday_rolls_to_monday(self):
+        from scheduler import _next_fire
+        now = self._et(2026, 6, 6, 2, 0)   # Saturday → Monday Jun 8
+        nxt = _next_fire(3, 30, now=now)
+        self.assertEqual((nxt.weekday(), nxt.day), (0, 8))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
