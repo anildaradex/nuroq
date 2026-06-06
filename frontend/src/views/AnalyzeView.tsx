@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Area, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ComposedChart,
 } from "recharts";
@@ -16,7 +16,15 @@ interface Props {
 }
 
 export function AnalyzeView({ initialTicker, onSendToQuickTrade }: Props) {
-  const [ticker, setTicker] = useState(initialTicker ?? "");
+  const qc = useQueryClient();
+  // The analysis result lives in the GLOBAL react-query cache (not component
+  // state), so it survives navigating away from this view and back. This query
+  // never fetches on its own — it's a persistent cache slot the mutation fills.
+  const cached = useQuery<AnalyzeResult>({
+    queryKey: ["analyze-result"],
+    enabled: false, staleTime: Infinity, gcTime: Infinity,
+  });
+  const [ticker, setTicker] = useState(initialTicker ?? cached.data?.ticker ?? "");
   const [active, setActive] = useState<"signal" | "ai" | "setup">("signal");
   const [recent, setRecent] = useState<string[]>(() => {
     try {
@@ -29,7 +37,9 @@ export function AnalyzeView({ initialTicker, onSendToQuickTrade }: Props) {
   const analyze = useMutation({
     mutationFn: (t: string) => api.analyze(t),
     onSuccess: (r) => {
+      qc.setQueryData(["analyze-result"], r);   // persist across navigation
       const t = r.ticker.toUpperCase();
+      setTicker(t);
       setRecent((rec) => {
         const next = [t, ...rec.filter((x) => x !== t)].slice(0, 8);
         localStorage.setItem("nuroq.recent", JSON.stringify(next));
@@ -40,11 +50,14 @@ export function AnalyzeView({ initialTicker, onSendToQuickTrade }: Props) {
     onError: () => haptic.error(),
   });
 
-  // Auto-run when a ticker is pushed in via drill-down from another view.
+  // Auto-run when a ticker is pushed in via drill-down — but skip if the cached
+  // result is already for that ticker (so navigating back doesn't re-run the AI).
   useEffect(() => {
     if (initialTicker) {
       setTicker(initialTicker);
-      analyze.mutate(initialTicker);
+      if (cached.data?.ticker?.toUpperCase() !== initialTicker.toUpperCase()) {
+        analyze.mutate(initialTicker);
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialTicker]);
@@ -57,7 +70,7 @@ export function AnalyzeView({ initialTicker, onSendToQuickTrade }: Props) {
     analyze.mutate(t);
   };
 
-  const r = analyze.data;
+  const r = cached.data;
 
   return (
     <div className="max-w-7xl mx-auto space-y-3">

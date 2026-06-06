@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ScanSearch, Loader2 } from "lucide-react";
 import { api } from "../lib/api";
 import { cn, fmtUSD, fmtPct } from "../lib/cn";
@@ -16,35 +16,30 @@ type ScanRow = {
 
 export function ScannerView({ onDrillIn }: Props) {
   const [mode, setMode] = useState<"top20" | "global">("top20");
-  const [scanning, setScanning] = useState(false);
+  const qc = useQueryClient();
 
-  // Start: returns immediately (the scan runs in the background on the server).
-  const start = useMutation({
-    mutationFn: () => api.scan(mode),
-    onMutate: () => { setScanning(true); haptic.medium(); },
-    onError: () => { setScanning(false); haptic.error(); },
-  });
-
-  // Poll for the result while a scan is in flight.
+  // Scan state is SERVER-backed: this query always reads /api/scan/status, so a
+  // finished scan's results persist across navigating away and back (they're
+  // re-fetched on mount). Polling is driven by the server's `running` flag.
   const status = useQuery({
     queryKey: ["scan-status"],
     queryFn: api.scanStatus,
-    enabled: scanning,
-    refetchInterval: scanning ? 3000 : false,
+    refetchInterval: (q) => (q.state.data?.running ? 3000 : false),
   });
+  const running = status.data?.running ?? false;
 
-  // Stop polling once the server reports the scan finished.
-  useEffect(() => {
-    if (scanning && status.data && !status.data.running) {
-      setScanning(false);
-      if (status.data.error) haptic.error(); else haptic.success();
-    }
-  }, [scanning, status.data]);
+  // Start: returns immediately; the scan runs in the background on the server.
+  const start = useMutation({
+    mutationFn: () => api.scan(mode),
+    onMutate: () => { haptic.medium(); },
+    onError: () => { haptic.error(); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["scan-status"] }); },  // kick off polling
+  });
 
   const rows = ((status.data?.rows as ScanRow[]) ?? []);
   const summary = status.data?.summary;
   const errMsg = (start.error as Error | undefined)?.message || status.data?.error || null;
-  const busy = scanning || start.isPending;
+  const busy = running || start.isPending;
 
   return (
     <div className="max-w-7xl mx-auto space-y-3">
