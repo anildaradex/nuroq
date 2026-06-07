@@ -6,7 +6,7 @@ import {
 import {
   Search, TrendingUp, Brain, Zap, AlertCircle, Loader2, Sparkles, SendHorizonal, Scale,
 } from "lucide-react";
-import { api, type AnalyzeResult } from "../lib/api";
+import { api, type AnalyzeResult, type AuthStatus } from "../lib/api";
 import { cn, fmtUSD, fmtPct } from "../lib/cn";
 import { haptic } from "../lib/native";
 
@@ -260,6 +260,15 @@ function SignalTab({ r }: { r: AnalyzeResult }) {
 function AITab({ r }: { r: AnalyzeResult }) {
   // Peer comparison (this instance's AI vs the cloud Gemini box). The local
   // column reuses `r`; clicking the button only fetches the peer, so it's fast.
+  // Same react-query key as App's auth gate → no extra network round trip.
+  const auth = useQuery<AuthStatus>({
+    queryKey: ["auth-status"], queryFn: api.authStatus, staleTime: 60_000,
+  });
+  // Show the compare button ONLY on the local Gemma box. From the cloud box
+  // there's no peer worth asking (it can't reach the user's Mac, and comparing
+  // Gemini against itself is meaningless).
+  const canCompare = auth.data?.ai_backend === "gemma";
+
   const compare = useMutation({
     mutationFn: (t: string) => api.analyzePeer(t),
     onSuccess: () => haptic.tap(),
@@ -327,7 +336,9 @@ function AITab({ r }: { r: AnalyzeResult }) {
         </div>
       )}
 
-      {/* Side-by-side compare against the cloud (Gemini) backend. */}
+      {/* Side-by-side compare against the cloud (Gemini) backend. Local-only:
+          the cloud can't reach the user's Mac, and Gemini-vs-itself is moot. */}
+      {canCompare && (
       <div className="pt-1">
         <button
           onClick={() => { haptic.tap(); compare.mutate(r.ticker); }}
@@ -350,6 +361,7 @@ function AITab({ r }: { r: AnalyzeResult }) {
           <div className="mt-2 text-xxs text-sell">Compare failed — is the backend reachable?</div>
         )}
       </div>
+      )}
     </div>
   );
 }

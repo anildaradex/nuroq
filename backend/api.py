@@ -189,15 +189,24 @@ class ChangePasswordReq(BaseModel):
 class AuthStatusResp(BaseModel):
     authenticated: bool
     must_change_password: bool   # true while still using the seeded "nuroq"
+    ai_backend: str              # "gemma" (local MLX) or "gemini" (cloud Vertex)
 
 
 @app.get("/api/auth/status", response_model=AuthStatusResp)
 def auth_status(request: Request):
-    """Cheap check the SPA polls at boot to decide login screen vs main UI."""
+    """Cheap check the SPA polls at boot to decide login screen vs main UI.
+
+    Also surfaces `ai_backend` so the SPA can show/hide backend-specific UI —
+    notably the A/B compare button (only useful from the local Gemma box, where
+    the *peer* is the cloud's Gemini). On the cloud box the button is hidden,
+    since comparing the cloud against itself is meaningless and the cloud can't
+    reach the user's Mac.
+    """
     return AuthStatusResp(
         authenticated=_is_authenticated(request),
         # If "nuroq" still works, flag the SPA to nag the user to change it.
         must_change_password=_auth.verify_password(_auth.INITIAL_PASSWORD),
+        ai_backend=dash.analyst.backend,
     )
 
 

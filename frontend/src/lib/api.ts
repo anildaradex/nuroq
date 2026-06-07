@@ -282,6 +282,10 @@ async function post<T>(url: string, body?: unknown): Promise<T> {
 export interface AuthStatus {
   authenticated: boolean;
   must_change_password: boolean;
+  /** "gemma" on the local Mac (MLX), "gemini" on the cloud (Vertex). The A/B
+   *  compare button only shows when this is "gemma" — the cloud can't reach
+   *  back to your Mac, and "compare cloud against itself" is meaningless. */
+  ai_backend: string;
 }
 
 export const api = {
