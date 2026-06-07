@@ -35,7 +35,7 @@ if str(ROOT) not in sys.path:
 # for the bot-token getUpdates slot.
 os.environ.setdefault("NUROQ_BACKGROUND_SERVICES", "1")
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -112,43 +112,40 @@ app.add_middleware(
 )
 
 
-# ─── API-key auth ────────────────────────────────────────────────────────────
+# ─── Session-cookie auth (single-user password login) ────────────────────────
 #
-# On a LAN this backend was unauthenticated. Exposed on a public cloud URL (GCP)
-# that is unsafe — anyone could read your portfolio or place trades. When
-# NUROQ_API_KEY is set, every request must carry a matching `X-NuroQ-Key` header
-# (or `?api_key=` for convenience). When it is UNSET, auth is disabled (preserves
-# the local/LAN dev experience). The health check and CORS preflight are always
-# open so uptime probes and browsers work.
-_API_KEY = os.getenv("NUROQ_API_KEY")
-# Exempt: health/probes, the docs, the SPA shell + its static assets, and the
-# tunnel-url helper. The SPA's own /api/* calls are NOT exempt — they auth via
-# the cookie dropped below.
-_AUTH_EXEMPT_PATHS = {"/health", "/api/health", "/", "/index.html",
-                      "/docs", "/openapi.json", "/redoc", "/tunnel-url", "/favicon.ico"}
+# `https://nuroq.nuroquant.com` is publicly reachable, so /api/* needs a gate
+# (anything else and anyone could read positions or place trades). Mechanism:
+#   • POST /api/auth/login {password} → sets a signed `nuroq_session` cookie
+#   • Every other /api/* requires that cookie
+#   • Exempt: SPA shell + static assets, /health, /docs, login + status checks
+# Password storage + token signing live in backend/auth.py. Seeded with "nuroq"
+# on first run — CHANGE IT via the in-app form.
+from backend import auth as _auth  # noqa: E402
+
+_AUTH_EXEMPT_PATHS = {
+    "/health", "/api/health",
+    "/", "/index.html", "/docs", "/openapi.json", "/redoc",
+    "/tunnel-url", "/favicon.ico",
+    "/api/auth/login", "/api/auth/status",
+}
 _AUTH_EXEMPT_PREFIXES = ("/assets/",)   # built SPA bundles (JS/CSS)
 
 
+def _is_authenticated(request) -> bool:
+    return _auth.verify_token(request.cookies.get(_auth.COOKIE_NAME))
+
+
 @app.middleware("http")
-async def _api_key_guard(request, call_next):
+async def _session_guard(request, call_next):
     from starlette.responses import JSONResponse
-    if _API_KEY:
-        path = request.url.path
-        q = request.query_params.get("api_key")
-        presented = (request.headers.get("x-nuroq-key") or q
-                     or request.cookies.get("nuroq_key"))
-        exempt = (request.method == "OPTIONS" or path in _AUTH_EXEMPT_PATHS
-                  or path.startswith(_AUTH_EXEMPT_PREFIXES))
-        if not exempt and presented != _API_KEY:
-            return JSONResponse(status_code=401, content={"detail": "Invalid or missing API key."})
-        response = await call_next(request)
-        # Visiting any URL with a valid ?api_key= drops a cookie so the served
-        # SPA's same-origin /api/* calls authenticate automatically — open
-        # https://<tunnel>/?api_key=KEY once and the whole UI works.
-        if q and q == _API_KEY:
-            response.set_cookie("nuroq_key", _API_KEY, max_age=86400,
-                                httponly=True, samesite="lax")
-        return response
+    path = request.url.path
+    exempt = (request.method == "OPTIONS"
+              or path in _AUTH_EXEMPT_PATHS
+              or path.startswith(_AUTH_EXEMPT_PREFIXES))
+    if not exempt and not _is_authenticated(request):
+        return JSONResponse(status_code=401,
+                            content={"detail": "Not authenticated."})
     return await call_next(request)
 
 
@@ -176,6 +173,76 @@ def tunnel_url():
         return {"url": m[-1] if m else None}
     except Exception as e:
         return {"url": None, "note": str(e)}
+
+
+# ─── Auth: login / logout / status / change-password ────────────────────────
+
+class LoginReq(BaseModel):
+    password: str
+
+
+class ChangePasswordReq(BaseModel):
+    current_password: str
+    new_password: str
+
+
+class AuthStatusResp(BaseModel):
+    authenticated: bool
+    must_change_password: bool   # true while still using the seeded "nuroq"
+
+
+@app.get("/api/auth/status", response_model=AuthStatusResp)
+def auth_status(request: Request):
+    """Cheap check the SPA polls at boot to decide login screen vs main UI."""
+    return AuthStatusResp(
+        authenticated=_is_authenticated(request),
+        # If "nuroq" still works, flag the SPA to nag the user to change it.
+        must_change_password=_auth.verify_password(_auth.INITIAL_PASSWORD),
+    )
+
+
+@app.post("/api/auth/login")
+def auth_login(req: LoginReq):
+    from starlette.responses import JSONResponse
+    if not _auth.verify_password(req.password):
+        # No timing-safe message — just a generic 401. (verify_password itself
+        # uses hmac.compare_digest so the hash compare is constant-time.)
+        return JSONResponse(status_code=401,
+                            content={"ok": False, "detail": "Wrong password."})
+    token = _auth.issue_token()
+    resp = JSONResponse({"ok": True})
+    # Same-site lax so the cookie survives top-level navigation; httponly so
+    # JS can't read it. 30-day life matches the token's exp claim.
+    resp.set_cookie(_auth.COOKIE_NAME, token, max_age=_auth.SESSION_TTL,
+                    httponly=True, samesite="lax", path="/")
+    return resp
+
+
+@app.post("/api/auth/logout")
+def auth_logout():
+    from starlette.responses import JSONResponse
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(_auth.COOKIE_NAME, path="/")
+    return resp
+
+
+@app.post("/api/auth/change-password")
+def auth_change_password(req: ChangePasswordReq, request: Request):
+    from starlette.responses import JSONResponse
+    if not _is_authenticated(request):
+        return JSONResponse(status_code=401,
+                            content={"ok": False, "detail": "Not authenticated."})
+    if not _auth.verify_password(req.current_password):
+        return JSONResponse(status_code=401,
+                            content={"ok": False, "detail": "Current password is wrong."})
+    if len(req.new_password) < 6:
+        return JSONResponse(status_code=400,
+                            content={"ok": False,
+                                     "detail": "New password must be at least 6 characters."})
+    _auth.change_password(req.new_password)
+    # Re-issue a fresh session bound to the new secret stays the same
+    # (session_secret is per-box, unchanged by password rotation).
+    return JSONResponse({"ok": True})
 
 
 # ─── Schemas ─────────────────────────────────────────────────────────────────
@@ -965,6 +1032,153 @@ def analyze(ticker: str):
             "lower_bb": lower_bb,
         },
     )
+
+
+# ─── Backend A/B comparison: peer (cloud Gemini) second opinion ──────────────
+#
+# Fetches a peer instance's read of the same ticker for side-by-side comparison.
+# Canonical use: local Mac (Gemma MLX) calling https://nuroq.nuroquant.com
+# (Gemini via Vertex). The quant rubric is identical on both boxes; only the
+# gated ~10pt AI tiebreaker differs.
+#
+# Auth flow: peer login is password-based now (same as the SPA), so this calls
+# the peer's POST /api/auth/login with NUROQ_PEER_PASSWORD, caches the session
+# cookie, and reuses it. Re-logs in on a 401. Config:
+#   NUROQ_COMPARE_URL      peer base URL (default https://nuroq.nuroquant.com)
+#   NUROQ_PEER_PASSWORD    peer password (compare disabled if unset)
+# Peer failures degrade gracefully (peer=null + note) — never 500s the view.
+
+import json as _json
+import urllib.request as _urlreq
+import urllib.error as _urlerr
+
+COMPARE_URL = os.getenv("NUROQ_COMPARE_URL", "https://nuroq.nuroquant.com").rstrip("/")
+PEER_PASSWORD = os.getenv("NUROQ_PEER_PASSWORD", "").strip()
+_peer_session: dict[str, str] = {}   # {"cookie": "nuroq_session=..."}
+
+
+def _backend_label(name: Optional[str]) -> str:
+    n = (name or "").strip().lower()
+    if n == "gemma":
+        return "Gemma · local MLX"
+    if n in ("gemini", "vertex", "google"):
+        return "Gemini · cloud Vertex"
+    return name or "unknown"
+
+
+def _peer_login() -> None:
+    """POST password to peer's /api/auth/login; stash the session cookie."""
+    body = _json.dumps({"password": PEER_PASSWORD}).encode()
+    req = _urlreq.Request(
+        COMPARE_URL + "/api/auth/login",
+        data=body, method="POST",
+        headers={"Content-Type": "application/json",
+                 "User-Agent": "NuroQ-Compare/2.0"},
+    )
+    with _urlreq.urlopen(req, timeout=10.0) as resp:  # noqa: S310 (trusted URL)
+        # urllib gives us the Set-Cookie header verbatim — grab just the
+        # name=value pair (everything before the first `;`).
+        sc = resp.headers.get("Set-Cookie", "")
+        if not sc:
+            raise RuntimeError("peer login returned no Set-Cookie")
+        _peer_session["cookie"] = sc.split(";", 1)[0].strip()
+
+
+def _peer_get(path: str, timeout: float, _retry: bool = True) -> dict:
+    """GET {COMPARE_URL}{path} authenticating via cached session cookie.
+
+    A real User-Agent is required: the cloud peer sits behind Cloudflare, which
+    403s the default `Python-urllib/x` UA as a bot. On 401 we re-login once.
+    """
+    if not _peer_session.get("cookie"):
+        _peer_login()
+    req = _urlreq.Request(
+        COMPARE_URL + path,
+        headers={"Cookie": _peer_session["cookie"],
+                 "User-Agent": "NuroQ-Compare/2.0"},
+    )
+    try:
+        with _urlreq.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+            return _json.loads(resp.read().decode("utf-8"))
+    except _urlerr.HTTPError as e:
+        # Session expired → re-login once then retry. After that, give up.
+        if e.code == 401 and _retry:
+            _peer_session.pop("cookie", None)
+            return _peer_get(path, timeout, _retry=False)
+        raise
+
+
+class PeerSide(BaseModel):
+    backend: str
+    ok: bool
+    final_score: Optional[int] = None
+    rating: Optional[str] = None
+    ai_score: Optional[int] = None
+    ai_reasoning: Optional[str] = None
+    ai_key_risk: Optional[str] = None
+    price: Optional[float] = None
+    elapsed_s: Optional[float] = None
+    error: Optional[str] = None
+
+
+class PeerCompareResp(BaseModel):
+    ticker: str
+    local_backend: str            # friendly label for THIS instance's backend
+    peer: Optional[PeerSide] = None
+    note: Optional[str] = None
+
+
+@app.get("/api/analyze/peer/{ticker}", response_model=PeerCompareResp)
+def analyze_peer(ticker: str):
+    """Fetch a peer instance's AI analysis of `ticker` for side-by-side compare.
+
+    The frontend renders the local column from its existing analysis; this only
+    adds the peer (cloud Gemini) opinion. See the module note above for config.
+    """
+    ticker = ticker.upper().strip()
+    if not ticker:
+        raise HTTPException(400, "ticker required")
+
+    local_backend = _backend_label(dash.analyst.backend)
+
+    if not PEER_PASSWORD:
+        return PeerCompareResp(
+            ticker=ticker, local_backend=local_backend, peer=None,
+            note="Cloud comparison disabled — set NUROQ_PEER_PASSWORD "
+                 "(the cloud box's login password) to enable the Gemini side.",
+        )
+
+    # Best-effort: ask the peer what backend it runs so we can label the column.
+    peer_backend = "Peer"
+    try:
+        peer_backend = _backend_label(_peer_get("/health", 8.0).get("ai_backend"))
+    except Exception:
+        pass
+
+    t0 = time.time()
+    try:
+        p = _peer_get(f"/api/analyze/{ticker}", 30.0)
+    except _urlerr.HTTPError as e:
+        return PeerCompareResp(
+            ticker=ticker, local_backend=local_backend,
+            peer=PeerSide(backend=peer_backend, ok=False, error=f"{e.code} {e.reason}"),
+            note=f"Peer {COMPARE_URL} returned {e.code}.",
+        )
+    except Exception as e:
+        return PeerCompareResp(
+            ticker=ticker, local_backend=local_backend,
+            peer=PeerSide(backend=peer_backend, ok=False, error=e.__class__.__name__),
+            note=f"Could not reach {COMPARE_URL} for the Gemini comparison.",
+        )
+
+    peer = PeerSide(
+        backend=peer_backend, ok=True,
+        final_score=p.get("final_score"), rating=p.get("rating"),
+        ai_score=p.get("ai_score"), ai_reasoning=p.get("ai_reasoning"),
+        ai_key_risk=p.get("ai_key_risk"), price=p.get("price"),
+        elapsed_s=round(time.time() - t0, 1),
+    )
+    return PeerCompareResp(ticker=ticker, local_backend=local_backend, peer=peer)
 
 
 # ─── Portfolio remove ────────────────────────────────────────────────────────

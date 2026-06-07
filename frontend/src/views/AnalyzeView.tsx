@@ -4,7 +4,7 @@ import {
   Area, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ComposedChart,
 } from "recharts";
 import {
-  Search, TrendingUp, Brain, Zap, AlertCircle, Loader2, Sparkles, SendHorizonal,
+  Search, TrendingUp, Brain, Zap, AlertCircle, Loader2, Sparkles, SendHorizonal, Scale,
 } from "lucide-react";
 import { api, type AnalyzeResult } from "../lib/api";
 import { cn, fmtUSD, fmtPct } from "../lib/cn";
@@ -197,8 +197,8 @@ function PriceChart({ r }: { r: AnalyzeResult }) {
         <ComposedChart data={data} margin={{ top: 4, right: 8, bottom: 16, left: 0 }}>
           <defs>
             <linearGradient id="bb-fill" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#14b8a6" stopOpacity={0.15} />
-              <stop offset="100%" stopColor="#14b8a6" stopOpacity={0.02} />
+              <stop offset="0%" stopColor="#147a45" stopOpacity={0.15} />
+              <stop offset="100%" stopColor="#147a45" stopOpacity={0.02} />
             </linearGradient>
           </defs>
           <XAxis dataKey="t" tick={{ fontSize: 10, fill: "currentColor", opacity: 0.6 }}
@@ -210,10 +210,10 @@ function PriceChart({ r }: { r: AnalyzeResult }) {
             labelStyle={{ color: "#9ca3af" }}
             formatter={(v) => (typeof v === "number" ? v.toFixed(2) : v)}
           />
-          <Area type="monotone" dataKey="upper" stroke="#14b8a6" strokeOpacity={0.3} fill="url(#bb-fill)" dot={false} />
-          <Area type="monotone" dataKey="lower" stroke="#14b8a6" strokeOpacity={0.3} fill="transparent" dot={false} />
+          <Area type="monotone" dataKey="upper" stroke="#147a45" strokeOpacity={0.3} fill="url(#bb-fill)" dot={false} />
+          <Area type="monotone" dataKey="lower" stroke="#147a45" strokeOpacity={0.3} fill="transparent" dot={false} />
           <Line type="monotone" dataKey="sma20" stroke="#a855f7" strokeWidth={1.5} dot={false} />
-          <Line type="monotone" dataKey="close" stroke="#10b981" strokeWidth={2} dot={false} />
+          <Line type="monotone" dataKey="close" stroke="#1a8348" strokeWidth={2} dot={false} />
         </ComposedChart>
       </ResponsiveContainer>
     </div>
@@ -258,9 +258,54 @@ function SignalTab({ r }: { r: AnalyzeResult }) {
 }
 
 function AITab({ r }: { r: AnalyzeResult }) {
+  // Peer comparison (this instance's AI vs the cloud Gemini box). The local
+  // column reuses `r`; clicking the button only fetches the peer, so it's fast.
+  const compare = useMutation({
+    mutationFn: (t: string) => api.analyzePeer(t),
+    onSuccess: () => haptic.tap(),
+    onError: () => haptic.error(),
+  });
+
   if (r.ai_score == null && !r.ai_reasoning) {
     return <div className="text-xs opacity-60">No cached AI reasoning. Run a research cycle.</div>;
   }
+
+  // ── A/B view: local backend vs cloud Gemini, side by side ──
+  const cmp = compare.data;
+  if (cmp?.peer?.ok) {
+    const p = cmp.peer;
+    const dScore =
+      r.ai_score != null && p.ai_score != null ? Math.abs(r.ai_score - p.ai_score) : null;
+    const agree = r.rating && p.rating ? r.rating === p.rating : null;
+    return (
+      <div className="space-y-3 text-xs">
+        <div className="flex items-center justify-between">
+          <span className="font-semibold flex items-center gap-1.5">
+            <Scale className="w-3.5 h-3.5" /> Backend comparison
+          </span>
+          <button className="text-accent hover:underline" onClick={() => compare.reset()}>
+            ← back
+          </button>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {dScore != null && <span className="pill pill-off">Δ AI score {dScore}</span>}
+          {agree != null && (
+            <span className={cn("pill", agree ? "pill-ok" : "pill-warn")}>
+              {agree ? "Ratings agree" : "Ratings differ"}
+            </span>
+          )}
+          {p.elapsed_s != null && <span className="pill pill-off">cloud {p.elapsed_s}s</span>}
+        </div>
+        <div className="grid sm:grid-cols-2 gap-3">
+          <CompareCol label={cmp.local_backend} score={r.ai_score}
+                      rating={r.rating} reasoning={r.ai_reasoning} />
+          <CompareCol label={p.backend} score={p.ai_score}
+                      rating={p.rating} reasoning={p.ai_reasoning} />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-3 text-xs">
       {r.ai_score != null && (
@@ -281,6 +326,51 @@ function AITab({ r }: { r: AnalyzeResult }) {
           </ul>
         </div>
       )}
+
+      {/* Side-by-side compare against the cloud (Gemini) backend. */}
+      <div className="pt-1">
+        <button
+          onClick={() => { haptic.tap(); compare.mutate(r.ticker); }}
+          disabled={compare.isPending}
+          className="btn btn-ghost w-full"
+        >
+          {compare.isPending ? (
+            <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Fetching cloud (Gemini)…</>
+          ) : (
+            <><Scale className="w-3.5 h-3.5" /> Compare with cloud (Gemini)</>
+          )}
+        </button>
+        {cmp && !cmp.peer?.ok && (
+          <div className="mt-2 flex items-start gap-1.5 text-xxs text-amber-500">
+            <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+            <span>{cmp.note ?? cmp.peer?.error ?? "Comparison unavailable."}</span>
+          </div>
+        )}
+        {compare.isError && (
+          <div className="mt-2 text-xxs text-sell">Compare failed — is the backend reachable?</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CompareCol({
+  label, score, rating, reasoning,
+}: { label: string; score: number | null; rating: string | null; reasoning: string | null }) {
+  return (
+    <div className="card card-tight space-y-1.5">
+      <div className="font-semibold text-xxs uppercase tracking-wide opacity-70">{label}</div>
+      <div className="flex items-center gap-2">
+        <span className="font-mono font-bold text-base">{score ?? "—"}</span>
+        <span className="opacity-50">/100</span>
+        {rating && (
+          <span className={cn(
+            "pill ml-auto",
+            rating === "BUY" ? "pill-ok" : rating === "SELL" ? "pill-err" : "pill-off",
+          )}>{rating}</span>
+        )}
+      </div>
+      <p className="opacity-80 leading-relaxed whitespace-pre-wrap">{reasoning ?? "—"}</p>
     </div>
   );
 }

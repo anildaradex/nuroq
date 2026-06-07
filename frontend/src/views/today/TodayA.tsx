@@ -23,7 +23,7 @@ export function TodayA({ acct, history, cards, nextActions, feed, orders, portfo
 
   const pl = acct.todays_pl;
   const plColor = pl >= 0 ? "text-buy" : "text-sell";
-  const plStroke = pl >= 0 ? "#10b981" : "#ef4444";
+  const plStroke = pl >= 0 ? "#1a8348" : "#ef4444";
   const series = history?.equity_series.map((v, i) => ({ i, v })) ?? [];
 
   return (

@@ -222,7 +222,7 @@ function EquityChart({
 
   // Color the curve by whether the period is up or down overall.
   const up = (hist?.return_pct ?? 0) >= 0;
-  const stroke = up ? "#10b981" : "#ef4444";
+  const stroke = up ? "#1a8348" : "#ef4444";
   const baseline = series.length ? series[0].equity : 0;
 
   const fmtAxisDate = (i: number) => {

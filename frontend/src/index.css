@@ -4,17 +4,17 @@
 
 @layer base {
   html {
-    font-feature-settings: "cv11", "ss01";
+    /* tabular-nums keeps prices/columns aligned (works on SF Pro & system UI). */
     font-variant-numeric: tabular-nums;
     /* iOS: prevent text-size jump on landscape rotate */
     -webkit-text-size-adjust: 100%;
   }
   body {
     margin: 0;
-    /* Base body bumped 13 → 14px with comfortable leading for clarity
-       (Google Finance-style readability). Component classes set their own
-       sizes; this is the fallback for anything unstyled. */
-    font-size: 14px;
+    /* Base body at 15px with comfortable leading — WhatsApp-style readability.
+       Component classes set their own sizes; this is the fallback for anything
+       unstyled. */
+    font-size: 15px;
     line-height: 1.5;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;

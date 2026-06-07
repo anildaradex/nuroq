@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { TopBar } from "./components/TopBar";
 import { LeftRailNav, type ViewId } from "./components/LeftRailNav";
 import { MobileNav } from "./components/MobileNav";
 import { CommandPalette } from "./components/CommandPalette";
 import { QuickTrade, type QuickTradePrefill } from "./components/QuickTrade";
 import { OrderReviewModal, type OrderReview } from "./components/OrderReviewModal";
+import { LoginScreen, ChangePasswordPanel } from "./components/LoginScreen";
 import { TodayView } from "./views/TodayView";
 import { AnalyzeView } from "./views/AnalyzeView";
 import { WatchlistView } from "./views/WatchlistView";
@@ -15,6 +16,7 @@ import { ScannerView } from "./views/ScannerView";
 import { SignalsView } from "./views/SignalsView";
 import { SystemView } from "./views/SystemView";
 import { LogsView } from "./views/LogsView";
+import { api, type AuthStatus } from "./lib/api";
 import { haptic, hideSplashWhenReady, onAppResume, syncStatusBar } from "./lib/native";
 
 function getInitialView(): ViewId {
@@ -23,10 +25,33 @@ function getInitialView(): ViewId {
 }
 
 export default function App() {
+  // Auth gate: poll /api/auth/status. While loading, render nothing (avoids a
+  // flash of "Login" then the real UI). On `authenticated:false`, show the
+  // login screen. Any /api/* call that 401s also invalidates this query so the
+  // screen flips back to Login mid-session if the cookie expires.
+  const qcAuth = useQueryClient();
+  const auth = useQuery<AuthStatus>({
+    queryKey: ["auth-status"],
+    queryFn: api.authStatus,
+    staleTime: 60_000,
+    retry: false,
+  });
+  if (auth.isPending) return null;
+  if (!auth.data?.authenticated) {
+    return <LoginScreen onLoggedIn={() => qcAuth.invalidateQueries({ queryKey: ["auth-status"] })} />;
+  }
+  return <AuthenticatedApp mustChangePassword={!!auth.data.must_change_password} />;
+}
+
+function AuthenticatedApp({ mustChangePassword }: { mustChangePassword: boolean }) {
   const [view, setView] = useState<ViewId>(getInitialView());
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [analyzeTicker, setAnalyzeTicker] = useState<string | undefined>();
   const [qtPrefill, setQtPrefill] = useState<QuickTradePrefill | undefined>();
+  // Auto-show the change-password modal while the seeded "nuroq" still works.
+  // Dismissible (in case the user wants to look around first); reappears next
+  // session because `must_change_password` will still be true.
+  const [showChangePw, setShowChangePw] = useState(mustChangePassword);
   // Order review modal — opens when the user taps ⚡ on a Watchlist row.
   // Spacious surface for reviewing/editing a sized order before submission.
   // Coexists with QuickTrade (which stays for fast manual typing).
@@ -110,6 +135,22 @@ export default function App() {
         onNavigate={(v) => { setView(v); setPaletteOpen(false); }}
         onAnalyze={(ticker) => { drillIn(ticker); setPaletteOpen(false); }}
       />
+      {showChangePw && (
+        <div className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm flex items-center justify-center px-4">
+          <div className="relative">
+            <ChangePasswordPanel onDone={() => {
+              setShowChangePw(false);
+              // Re-query so the banner doesn't reappear after navigation
+              qc.invalidateQueries({ queryKey: ["auth-status"] });
+            }} />
+            <button
+              onClick={() => setShowChangePw(false)}
+              className="absolute -top-2 -right-2 btn btn-ghost !p-1 !min-h-0 text-xs"
+              title="Dismiss"
+            >✕</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

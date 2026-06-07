@@ -141,6 +141,26 @@ export interface AnalyzeResult {
   };
 }
 
+/** One side of the backend A/B comparison (the cloud Gemini peer). */
+export interface PeerSide {
+  backend: string;
+  ok: boolean;
+  final_score: number | null;
+  rating: string | null;
+  ai_score: number | null;
+  ai_reasoning: string | null;
+  ai_key_risk: string | null;
+  price: number | null;
+  elapsed_s: number | null;
+  error: string | null;
+}
+export interface PeerCompare {
+  ticker: string;
+  local_backend: string;
+  peer: PeerSide | null;
+  note: string | null;
+}
+
 export interface SignalRow {
   timestamp: string;
   ticker: string;
@@ -219,8 +239,27 @@ export interface TradeSetup {
 const API_BASE = (import.meta as ImportMeta & { env: { VITE_API_BASE?: string } })
   .env.VITE_API_BASE ?? "";
 
+// Auth is now password-login via /api/auth/login. The server sets an httponly
+// `nuroq_session` cookie which the browser sends automatically on every same-
+// origin /api/* call. `credentials: "include"` lets the cookie travel cross-
+// origin too (Capacitor WebView calling the cloud) when the server CORS allows.
+//
+// 401 = "log in again" — the App-level AuthGate watches /api/auth/status and
+// renders the LoginScreen, so a 401 here just bubbles up as a normal query
+// error and the user is moved to the login form on the next status check.
+
+/** A 401 from any endpoint — let callers distinguish "not authed" from network errors. */
+export class UnauthorizedError extends Error {
+  path: string;
+  constructor(path: string) {
+    super(`401: ${path}`);
+    this.path = path;
+  }
+}
+
 async function get<T>(url: string): Promise<T> {
-  const r = await fetch(API_BASE + url);
+  const r = await fetch(API_BASE + url, { credentials: "include" });
+  if (r.status === 401) throw new UnauthorizedError(url);
   if (!r.ok) throw new Error(`${r.status} ${r.statusText}: ${url}`);
   return r.json();
 }
@@ -228,14 +267,21 @@ async function get<T>(url: string): Promise<T> {
 async function post<T>(url: string, body?: unknown): Promise<T> {
   const r = await fetch(API_BASE + url, {
     method: "POST",
+    credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : undefined,
   });
+  if (r.status === 401) throw new UnauthorizedError(url);
   if (!r.ok) {
     const text = await r.text().catch(() => "");
     throw new Error(`${r.status} ${r.statusText}: ${url} ${text}`);
   }
   return r.json();
+}
+
+export interface AuthStatus {
+  authenticated: boolean;
+  must_change_password: boolean;
 }
 
 export const api = {
@@ -256,6 +302,16 @@ export const api = {
   systemHealth:   () => get<HealthComponent[]>("/api/system/health"),
   // Deep analysis
   analyze:        (ticker: string) => get<AnalyzeResult>(`/api/analyze/${ticker.toUpperCase()}`),
+  analyzePeer:    (ticker: string) => get<PeerCompare>(`/api/analyze/peer/${ticker.toUpperCase()}`),
+  // Auth
+  authStatus:     () => get<AuthStatus>("/api/auth/status"),
+  login:          (password: string) =>
+                    post<{ ok: boolean; detail?: string }>("/api/auth/login", { password }),
+  logout:         () => post<{ ok: boolean }>("/api/auth/logout"),
+  changePassword: (current_password: string, new_password: string) =>
+                    post<{ ok: boolean; detail?: string }>(
+                      "/api/auth/change-password",
+                      { current_password, new_password }),
   tradeSetup:     (ticker: string) => get<TradeSetup>(`/api/trade-setup/${ticker.toUpperCase()}`),
   washSale:       (ticker: string) => get<WashSaleRisk>(`/api/wash-sale/${ticker.toUpperCase()}`),
   ask:            (ticker: string, question: string) =>

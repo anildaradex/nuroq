@@ -18,6 +18,142 @@
 
 ---
 
+## Current session — 2026-06-07
+
+**Replaced API-key auth with password login (single-user).** The 48-char
+`X-NuroQ-Key` was strong but the UX was bad: cookies expired daily, scoped per
+origin (cloud URL vs SSH-tunnel localhost = separate cookie jars = re-prompts),
+flaky in cross-origin Capacitor WebView. Swapped to familiar password login.
+- **New `backend/auth.py`** — PBKDF2-HMAC-SHA256 (600k iters, 16-byte salt),
+  HMAC-SHA256-signed session token. Stdlib only, no new deps. Storage: new
+  `auth_settings` row in the existing SQLite DB (NUROQ_DB_PATH). Seeded on
+  first access with `INITIAL_PASSWORD = "nuroq"` (intentionally weak — user
+  changes via the in-app form). Per-box `session_secret` survives restarts.
+- **`backend/api.py`** — replaced `X-NuroQ-Key` middleware with session-cookie
+  middleware (`_session_guard`). New endpoints:
+  - `GET /api/auth/status` → `{authenticated, must_change_password}`
+  - `POST /api/auth/login {password}` → sets httponly `nuroq_session` cookie (30d)
+  - `POST /api/auth/logout` → clears cookie
+  - `POST /api/auth/change-password {current_password, new_password}` — min 6
+  Exempt paths: SPA shell + assets, /health, /docs, /api/auth/status, /api/auth/login.
+- **Peer-compare auth flipped to password.** `NUROQ_COMPARE_KEY` gone; new
+  `NUROQ_PEER_PASSWORD`. Server posts to peer's `/api/auth/login`, caches the
+  session cookie in-process, re-logs in on 401. (Set this env var on the local
+  box after rotating the cloud password to re-enable cloud-Gemini compare.)
+- **`frontend/src/lib/api.ts`** — dropped `?api_key=` capture, `X-NuroQ-Key`
+  header injection, `nuroq.api_key` localStorage. Added `credentials: "include"`
+  on every fetch + new `UnauthorizedError`. New client methods: `authStatus`,
+  `login`, `logout`, `changePassword`.
+- **`frontend/src/App.tsx`** — outer `App` now polls `/api/auth/status` and
+  renders `LoginScreen` until authenticated. Real app moved into inner
+  `AuthenticatedApp`. Shows a centered backdrop-blur `ChangePasswordPanel`
+  modal automatically while `must_change_password: true`; dismissible.
+- **New `frontend/src/components/LoginScreen.tsx`** — password field, sign-in
+  button, seeded-password hint. Exports a `ChangePasswordPanel` with current /
+  new / confirm fields + client-side validation (length + match).
+- **Verified end-to-end:** wrong pw → 401, `"nuroq"` → 200 + cookie, protected
+  endpoint with cookie → 200, in-app password rotation (`"nuroq"` → `"TestPass123!"`)
+  → server-confirmed (old pw 401, new pw 200, must_change_password now false),
+  reset via `DELETE FROM auth_settings` re-seeds `"nuroq"`. Browser drove the
+  full flow: LoginScreen rendered → typed pw → app loaded → modal auto-opened.
+  No console errors. 110+ existing tests still pass.
+
+**⚠️ Cloud deploy required to take effect on https://nuroq.nuroquant.com.** The
+cloud is still running yesterday's bundle with the API-key gate. Push to `main`
+(GitHub Actions auto-deploys) or `PROJECT_ID=nuroq-prod-anildara ./deploy/deploy_gce.sh`.
+After deploy, open the cloud URL once → LoginScreen → password `"nuroq"` →
+change-password modal appears → set a real password (and put it in
+`NUROQ_PEER_PASSWORD` on the local box if you want compare to keep working).
+
+**Why password auth is fine for this app (recorded for future-me):** single
+user, paper trading, second factor is Telegram approve-buttons on real trades,
+no PII besides positions. Password keeps the gate but trades the URL-paste UX
+for a familiar form. Doesn't change the real risk model.
+
+**Auth UX fix: paste `?api_key=…` ONCE per browser, never again.** User kept
+hitting 401 on `/api/analyze/NVDA`; root cause was the SPA relied entirely on
+the 24h httponly `nuroq_key` cookie, which (a) expires daily, (b) is per-origin
+(cloud URL vs `localhost:8080` SSH tunnel = separate cookie jars = re-auth on
+each), (c) is unreliable in cross-origin Capacitor WebView calls.
+- **`frontend/src/lib/api.ts`** — on module load, capture `?api_key=` from URL
+  → `localStorage["nuroq.api_key"]` + scrub the key out of the address bar via
+  `history.replaceState` (so it doesn't sit in browser history). Wrap `get()` /
+  `post()` to inject `X-NuroQ-Key` from storage on every call. Server still
+  enforces auth (verified bare fetch → 401), but the SPA now self-authenticates
+  forever on each browser. Same key in `.env` and Secret Manager, so the
+  *same* paste authenticates against both local Gemma and cloud Gemini boxes.
+- **`backend/api.py`** — cookie `max_age` 24h → 30d (belt-and-suspenders for
+  curl / non-SPA clients / iOS WebView).
+- **Verified end-to-end:** wiped cookie + reloaded, drove the rebuilt SPA
+  through Analyze → NVDA, got `HOLD 56/100` with `cookieStillAbsent: true`,
+  `storedKeyStillThere: 48`, no console errors.
+
+**Explained the SSH-tunnel + Cloudflare reality:** SSH tunnel (`gcloud compute
+ssh nuroq-backend -- -N -L 8080:localhost:8000`) reaches GCP uvicorn directly
+bypassing Cloudflare. Verified `localhost:8080/health → 200 (ai_backend:gemini)`.
+Tunnel does NOT bypass NuroQ's own auth (lives in uvicorn middleware). The
+`nuroq-api` firewall rule has a stale source CIDR (`47.187.113.254/32`); SSH on
+:22 is open so the tunnel works without touching it. Direct `:8000` from
+browser would require updating the firewall to current IP.
+
+**Local-Gemma vs Cloud-Gemini health check + in-app A/B compare (shipped):**
+- **Verified local works.** Ran the exact `/api/analyze` path (`analyze_single_ticker_data`
+  → `analyst.analyze()`) locally on NVDA with MLX-Gemma: **56/HOLD** (ai 68),
+  ~44s cold model load + ~22s analyze. Cloud Gemini (Vertex) on the same ticker:
+  **57/HOLD** (ai 75), ~8s warm. Both cite the same signals (weak downtrend,
+  bullish BB lower-band reversal, P/E 31.46, ~85% rev growth) → backends agree
+  within 1 pt on final score. Validates the swappable-backend design.
+- **New A/B compare panel** (user picked "in-app A/B panel"):
+  - Backend `GET /api/analyze/peer/{ticker}` (`backend/api.py`) — returns THIS
+    instance's backend label + a *peer* instance's analysis fetched over HTTP.
+    Config `NUROQ_COMPARE_URL` (default `https://nuroq.nuroquant.com`) +
+    `NUROQ_COMPARE_KEY`. **Zero-config locally:** when unset AND local backend is
+    `gemma`, it reuses `NUROQ_API_KEY` (the deploy script persists the SAME
+    Secret-Manager key into local `.env`, so it authenticates against the cloud).
+    Peer side is frontend-supplied local + only the peer is fetched → fast (~8s,
+    no local Gemma re-run). Fails closed (peer=null + note).
+  - **Gotcha hit & fixed:** the cloud sits behind Cloudflare, which **403s the
+    default `Python-urllib/x` User-Agent** as a bot (curl's UA passes). Added a
+    `User-Agent: NuroQ-Compare/2.0` header to `_peer_get`. Verified 403→200.
+  - Frontend: AnalyzeView "AI Reasoning" tab gets a **Compare with cloud (Gemini)**
+    button → two-column view (local `Gemma · local MLX` vs `Gemini · cloud Vertex`)
+    with AI-score chips, ratings, reasoning, and **Δ AI score / Ratings agree**
+    badges (`api.ts` PeerCompare type + `analyzePeer`; `CompareCol` component).
+  - **Verified in-browser:** NVDA → Δ AI score 7, Ratings agree (both HOLD),
+    Gemma 68 vs Gemini 75, cloud 9s. No console errors. (Local backend has auth on
+    — open `localhost:8000/?api_key=<KEY>` once to set the cookie, like the cloud.)
+
+**UI readability pass (WhatsApp-style) + US-dollar-green palette:**
+- **Native font stack** — swapped the `Inter` webfont for a system-UI stack
+  (`-apple-system` → SF Pro on Mac/iPhone, Segoe UI / Roboto elsewhere) in
+  `tailwind.config.js`; removed the rsms.me Inter `<link>` + Inter-only
+  `font-feature-settings` (kept JetBrains Mono for tickers/numbers, kept
+  tabular-nums). Same clean, no-download approach WhatsApp uses.
+- **Type scale nudged for readability** — `sm` 14→14.5px (WhatsApp body ~14.2),
+  `base` 15→15.5px, `xs` 12.5→13px, comfortable line-heights; body fallback
+  14→15px in `index.css`.
+- **Light mode is now the DEFAULT** — `index.html` no longer hard-codes
+  `class="dark"`; added a pre-paint boot `<script>` that applies the saved theme
+  (default light). This also **fixed a latent persistence bug**: TopBar wrote
+  `localStorage["nuroq.theme"]` but nothing read it on boot, so the choice never
+  survived a reload. Now it does.
+- **"Greenback" palette** — replaced the emerald/teal `buy`/`accent` tokens with
+  deep US-dollar money-greens: `accent` `#147a45` (brand/buttons/focus/logo),
+  `buy` `#1a8348` (gains/up). Both WCAG-AA on white text + as text on white.
+  Updated the 4 hardcoded chart hexes (AnalyzeView BB bands + close line,
+  PortfolioView equity curve, TodayA P&L sparkline).
+- **Verified in-browser** (preview at :8000, built dist): light default + system
+  font (15px) + exact greens confirmed via computed styles (accent rgb(20,122,69),
+  buy rgb(26,131,72)); dark-mode toggle still works + persists; no console errors.
+  Note: Today Hero + Watchlist render empty because `watchlist_today` is stale
+  (data freshness, not styling).
+- **`.claude/launch.json`** — pointed the preview server at `uv run uvicorn`
+  (the TCC-safe path; the old `./.venv/bin/uvicorn` is blocked under `~/Documents`),
+  with `NUROQ_BACKGROUND_SERVICES=0`/`NUROQ_AUTOSTART_AGENT=0` so previews don't
+  fire Telegram/agent side effects.
+
+---
+
 ## Session 6 — 2026-06-03 → 06-06 (COMPLETE)
 
 > **TL;DR for next session:** NuroQ is LIVE in the cloud at

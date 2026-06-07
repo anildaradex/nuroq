@@ -1,6 +1,17 @@
 <!doctype html>
-<html lang="en" class="dark">
+<html lang="en">
   <head>
+    <!-- Apply the saved theme before paint (default = light). The TopBar
+         toggle persists to localStorage["nuroq.theme"]; this restores it so
+         the choice survives reloads. No class = light. -->
+    <script>
+      (function () {
+        try {
+          if (localStorage.getItem("nuroq.theme") === "dark")
+            document.documentElement.classList.add("dark");
+        } catch (e) {}
+      })();
+    </script>
     <meta charset="UTF-8" />
     <!-- viewport-fit=cover lets the app extend under the notch + home indicator;
          the CSS uses env(safe-area-inset-*) to keep content visible. -->
@@ -19,8 +30,8 @@
     <link rel="manifest" href="/manifest.json" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
 
-    <link rel="preconnect" href="https://rsms.me/" />
-    <link rel="stylesheet" href="https://rsms.me/inter/inter.css" />
+    <!-- Sans is the native system-UI font (SF Pro / Segoe UI / Roboto) — no
+         webfont needed, WhatsApp-style. Mono (tickers/numbers) still loads. -->
     <link
       rel="stylesheet"
       href="https://cdn.jsdelivr.net/npm/jetbrains-mono@1.0.6/css/jetbrains-mono.min.css"

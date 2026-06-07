@@ -3,11 +3,10 @@
   "configurations": [
     {
       "name": "nuroq",
-      "runtimeExecutable": "./.venv/bin/uvicorn",
+      "runtimeExecutable": "/bin/sh",
       "runtimeArgs": [
-        "backend.api:app",
-        "--port", "8000",
-        "--log-level", "warning"
+        "-c",
+        "NUROQ_BACKGROUND_SERVICES=0 NUROQ_AUTOSTART_AGENT=0 exec uv run uvicorn backend.api:app --port 8000 --log-level warning"
       ],
       "port": 8000
     }
