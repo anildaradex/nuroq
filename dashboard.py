@@ -1290,6 +1290,49 @@ def trigger_research_cycle_async() -> str:
             "ETA ~15-25 min. Telegram progress at 25/50/75/100%.")
 
 
+# ─── Async market scan ───────────────────────────────────────────────────────
+# The scan (20+ tickers × rate-limited data fetch + AI) runs well past the 100s
+# proxy timeout of the Cloudflare tunnel, which 524'd synchronous /api/scan
+# calls. So we run it in a daemon thread and let the UI poll for the result —
+# same shape as the research cycle. scan_market()/deep_market_scan() are defined
+# later in this file; the references resolve at call time.
+
+_scan_state: dict = {"active": False, "mode": None, "rows": [], "summary": "",
+                     "error": None, "started_at": None, "finished_at": None}
+_scan_lock = threading.Lock()
+
+
+def _run_scan_job(mode: str) -> None:
+    try:
+        rows, summary = deep_market_scan() if mode == "global" else scan_market()
+        recs = rows.to_dict(orient="records") if hasattr(rows, "to_dict") else (rows or [])
+        with _scan_lock:
+            _scan_state.update(rows=recs, summary=summary, error=None,
+                               active=False, finished_at=time.time())
+        logger.log(f"✅ Market scan ({mode}) done — {len(recs)} rows.")
+    except Exception as e:
+        with _scan_lock:
+            _scan_state.update(error=str(e), active=False, finished_at=time.time())
+        logger.log(f"⚠️ Market scan ({mode}) failed: {e}", level="ERROR")
+
+
+def start_scan_async(mode: str = "top20") -> dict:
+    """Kick off a scan in the background; returns immediately. Poll scan_status()."""
+    mode = "global" if str(mode).lower() == "global" else "top20"
+    with _scan_lock:
+        if _scan_state["active"]:
+            return {"started": False, "running": True, "message": "A scan is already running."}
+        _scan_state.update(active=True, mode=mode, rows=[], summary="",
+                           error=None, started_at=time.time(), finished_at=None)
+    threading.Thread(target=_run_scan_job, args=(mode,), name="market-scan", daemon=True).start()
+    return {"started": True, "running": True, "message": f"Scan ({mode}) started."}
+
+
+def scan_status() -> dict:
+    with _scan_lock:
+        return dict(_scan_state)
+
+
 # ─── Watchlist Today UI helpers ──────────────────────────────────────────────
 
 WATCHLIST_COLS = ["Rank", "Ticker", "Rating", "Quant", "AI", "Price", "Chg%",

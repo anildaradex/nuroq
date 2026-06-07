@@ -539,12 +539,17 @@ class ScanReq(BaseModel):
 
 @app.post("/api/scan")
 def scan(req: ScanReq):
-    if req.mode == "global":
-        rows, summary = dash.deep_market_scan()
-    else:
-        rows, summary = dash.scan_market()
-    return {"rows": rows.to_dict(orient="records") if hasattr(rows, "to_dict") else [],
-            "summary": summary}
+    """Start a scan in the background and return immediately. The scan can run for
+    minutes (20+ tickers × rate-limited fetch + AI), which exceeds Cloudflare's
+    100s tunnel timeout — so the UI polls GET /api/scan/status for the result."""
+    return dash.start_scan_async(req.mode)
+
+
+@app.get("/api/scan/status")
+def scan_status():
+    s = dash.scan_status()
+    return {"running": s["active"], "rows": s["rows"], "summary": s["summary"],
+            "error": s["error"], "mode": s["mode"], "started_at": s["started_at"]}
 
 
 # ─── Trade (Quick Trade endpoint) ────────────────────────────────────────────

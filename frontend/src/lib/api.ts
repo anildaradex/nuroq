@@ -266,6 +266,10 @@ export const api = {
   agentStart:     () => post<{ ok: boolean; message: string }>("/api/agent/start"),
   agentStop:      () => post<{ ok: boolean; message: string }>("/api/agent/stop"),
   researchCycle:  () => post<{ ok: boolean; message: string }>("/api/research-cycle"),
+  // Scan is async (long-running): start it, then poll scanStatus until !running.
   scan: (mode: "top20" | "global") =>
-    post<{ rows: unknown[]; summary: string }>("/api/scan", { mode }),
+    post<{ started: boolean; running: boolean; message: string }>("/api/scan", { mode }),
+  scanStatus: () =>
+    get<{ running: boolean; rows: unknown[]; summary: string; error: string | null; mode: string | null }>(
+      "/api/scan/status"),
 };

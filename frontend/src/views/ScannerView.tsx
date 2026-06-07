@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ScanSearch, Loader2 } from "lucide-react";
 import { api } from "../lib/api";
 import { cn, fmtUSD, fmtPct } from "../lib/cn";
@@ -16,13 +16,30 @@ type ScanRow = {
 
 export function ScannerView({ onDrillIn }: Props) {
   const [mode, setMode] = useState<"top20" | "global">("top20");
-  const scan = useMutation({
+  const qc = useQueryClient();
+
+  // Scan state is SERVER-backed: this query always reads /api/scan/status, so a
+  // finished scan's results persist across navigating away and back (they're
+  // re-fetched on mount). Polling is driven by the server's `running` flag.
+  const status = useQuery({
+    queryKey: ["scan-status"],
+    queryFn: api.scanStatus,
+    refetchInterval: (q) => (q.state.data?.running ? 3000 : false),
+  });
+  const running = status.data?.running ?? false;
+
+  // Start: returns immediately; the scan runs in the background on the server.
+  const start = useMutation({
     mutationFn: () => api.scan(mode),
-    onSuccess: () => haptic.success(),
-    onError: () => haptic.error(),
+    onMutate: () => { haptic.medium(); },
+    onError: () => { haptic.error(); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["scan-status"] }); },  // kick off polling
   });
 
-  const rows = ((scan.data?.rows as ScanRow[]) ?? []);
+  const rows = ((status.data?.rows as ScanRow[]) ?? []);
+  const summary = status.data?.summary;
+  const errMsg = (start.error as Error | undefined)?.message || status.data?.error || null;
+  const busy = running || start.isPending;
 
   return (
     <div className="max-w-7xl mx-auto space-y-3">
@@ -50,28 +67,30 @@ export function ScannerView({ onDrillIn }: Props) {
             >Global Deep Scan</button>
           </div>
           <button
-            onClick={() => { haptic.medium(); scan.mutate(); }}
-            disabled={scan.isPending}
+            onClick={() => start.mutate()}
+            disabled={busy}
             className="btn btn-primary"
           >
-            {scan.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
-            Run Scan
+            {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
+            {busy ? "Scanning…" : "Run Scan"}
           </button>
           <div className="text-xxs opacity-60">
-            {mode === "top20"
-              ? "~30s · curated 20-ticker universe"
-              : "~3 min · full market sweep (GPU-bound)"}
+            {busy
+              ? "Running in the background — results appear when ready (can take a few minutes)."
+              : mode === "top20"
+                ? "curated 20-ticker universe"
+                : "full market sweep"}
           </div>
         </div>
 
-        {scan.data?.summary && (
-          <div className="text-xs opacity-70 mt-2">{scan.data.summary}</div>
+        {summary && (
+          <div className="text-xs opacity-70 mt-2">{summary}</div>
         )}
       </div>
 
-      {scan.isError && (
+      {errMsg && (
         <div className="card card-tight border-sell/30 text-xs text-sell">
-          Scan failed: {(scan.error as Error).message}
+          Scan failed: {errMsg}
         </div>
       )}
 
@@ -116,7 +135,7 @@ export function ScannerView({ onDrillIn }: Props) {
         </div>
       )}
 
-      {!scan.isPending && rows.length === 0 && !scan.isError && (
+      {!busy && rows.length === 0 && !errMsg && (
         <div className="card card-tight nuroq-empty-state">
           Pick a mode and click <b>Run Scan</b>.
         </div>
