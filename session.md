@@ -18,7 +18,17 @@
 
 ---
 
-## Current session — Session 6 — 2026-06-03 → 06-04 (IN PROGRESS)
+## Session 6 — 2026-06-03 → 06-06 (COMPLETE)
+
+> **TL;DR for next session:** NuroQ is LIVE in the cloud at
+> **https://nuroq.nuroquant.com** (HTTPS via a named Cloudflare tunnel). GCE
+> e2-medium VM `nuroq-backend` @ static IP **34.9.20.141** (us-central1-a, project
+> `nuroq-prod-anildara`, 80GB disk). Gemini via **Vertex** (no key). **Auto-deploys
+> on push to `main`** (GitHub Actions + Workload Identity Federation). Scheduler +
+> live agent running; **paper trading only**. `main` == feature branch (PR #7 merged).
+> Access the UI: open `https://nuroq.nuroquant.com/?api_key=<KEY>` once (sets a
+> cookie). Key: `gcloud secrets versions access latest --secret=NUROQ_API_KEY --project=nuroq-prod-anildara`.
+> Redeploy manually: `PROJECT_ID=nuroq-prod-anildara ./deploy/deploy_gce.sh`.
 
 **Cloud migration — code made GCP-ready (2026-06-04):** Decided **Compute Engine
 VM + Gemini**. Did the real restructuring so NuroQ can run on Linux:
@@ -78,8 +88,61 @@ static IP was attached; baked into the script.)
   WIF pool `github-pool` + provider `github-provider` (owner-restricted),
   SA `gh-deployer` (artifactregistry.writer + compute.instanceAdmin.v1 +
   serviceAccountUser), repo bound via workloadIdentityUser. See deploy/README.md.
-- **Still TODO:** verify the first Actions run succeeds; HTTPS (Caddy/CF Tunnel)
-  before live; frontend VITE_API_BASE + iOS re-point; live trading stays OFF.
+- First WIF Actions run verified GREEN (build → push → update-container).
+
+**React UI + Cloudflare Tunnel — HTTPS from anywhere (2026-06-05/06):**
+- `Dockerfile.cloud` is now **multi-stage**: stage 1 builds the React SPA with
+  `VITE_API_BASE=""` (same-origin `/api` calls), baked into the image so the
+  backend serves the full UI at `/`. cloudflared installed in the image.
+- `deploy/entrypoint.sh` runs **cloudflared + uvicorn**: QUICK tunnel by default
+  (ephemeral `*.trycloudflare.com`, surfaced at `GET /tunnel-url`); NAMED tunnel
+  when `CLOUDFLARED_TOKEN` is set.
+- **Cookie auth** so the served SPA works without a key in every URL: the auth
+  middleware drops a `nuroq_key` cookie when a valid `?api_key=` is seen, and
+  accepts it on `/api/*`. SPA shell + `/assets/*` exempt. Visit
+  `https://<host>/?api_key=KEY` once → whole UI authenticates.
+- **PERMANENT named tunnel LIVE:** domain **nuroquant.com** (registered on
+  Cloudflare), tunnel `nuroq`, public hostname **nuroq.nuroquant.com → HTTP
+  localhost:8000** (gotcha: the route service must be **http**, not https, or
+  cloudflared 502s). `CLOUDFLARED_TOKEN` in Secret Manager + injected; the deploy
+  script resolves it from env/.env/Secret-Manager. URL: **https://nuroq.nuroquant.com**.
+- **'Gemma' → 'AI' labels:** renamed user-facing/log strings (Ask-AI UI spinner,
+  `get_consensus` logs, `/docs` docstrings) to backend-agnostic "AI" (cloud runs
+  Gemini, not Gemma). Internal identifiers (`_gemma_lock`, `"gemma"` backend) kept.
+
+**Bug fixes for cloud usability (2026-06-06):**
+- **Async market scan (fixes Cloudflare 524):** the scan ran past Cloudflare's
+  100s proxy timeout → 524. Now `start_scan_async()`/`scan_status()` (daemon
+  thread) in dashboard.py; `POST /api/scan` returns immediately; `GET
+  /api/scan/status` is polled by the UI. ScannerView rewritten to be server-backed.
+- **CPU-only torch image:** the default torch wheel pulled the ~3GB **NVIDIA CUDA
+  stack** → ~5GB image **filled the 30GB boot disk** (container crash-loop "no
+  space left"). `Dockerfile.cloud` now installs **CPU torch first**
+  (`--index-url .../whl/cpu`) → image ~1.5GB. Boot disk also resized **30→80GB**.
+- **Persist Analyze/Scan results across navigation:** views unmount on nav
+  (App.tsx conditional render) so component-local results were lost. Moved into the
+  **global react-query cache** — AnalyzeView keeps `["analyze-result"]`
+  (staleTime/gcTime Infinity); Scanner reads server-backed `/api/scan/status`.
+
+**Merge to main (2026-06-06):** PR #6's API squash-merge was INCOMPLETE and
+stripped `.github/workflows/deploy.yml` (the credential-helper token lacks
+`workflow` scope). Recovered `main` non-destructively (forward commit, no force).
+Final: **PR #7 created and merged via a real merge commit (`52a1598`)**; verified
+`origin/main == feat` exactly. `deploy.yml` triggers on push to `main` only.
+
+**End state:** tests **110/110 green**; NuroQ live at https://nuroq.nuroquant.com;
+`main` == feature branch; auto-deploy on merge to main.
+
+**Open / next-session candidates:**
+- Confirm the merge-to-main auto-deploy Action finished green.
+- **Today "Design lab" cleanup** — pick one of the 4 layout variants (TodayA-D),
+  delete the others + the switcher.
+- **Backups:** snapshot the 80GB boot disk on a schedule (SQLite + cloudflared
+  log live on the host-path `/var/lib/nuroq`). `gcloud compute disks snapshot`.
+- Optional: **Tailscale** as a more-private alternative to the public tunnel.
+- iOS app → re-point to https://nuroq.nuroquant.com + resubmit (`PUBLISHING.md`).
+- Live trading still **OFF** (needs `NUROQ_LIVE_TRADING=1` + `WASH_SALE_AWARE`/`§475`).
+- Tune sell-proposal thresholds + Today design once data accrues.
 
 ---
 

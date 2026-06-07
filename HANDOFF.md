@@ -1,12 +1,20 @@
 # NuroQ — Session Handoff
 
-> **For the next session.** Read this first. Everything you need to pick up where the last session ended.
+> **For the next session.** Read this first, then `session.md` (Session 6) for the play-by-play.
 >
-> **Date:** 2026-06-03 (session 6)
-> **Branch:** `feat/algo-claude-improvements`
-> **Latest shipped:** (1) `NUROQ_SECTION_475` flag (default OFF) — when a valid §475(f) election is asserted, `wash_sale_check` short-circuits to `risk=False` (neutralizing all 3 BUY gates) and the live-trading safety belt accepts it in lieu of `NUROQ_WASH_SALE_AWARE`. (2) **Option B — `propose_sells()`**: the quant layer now proactively proposes SELLs on held positions (TAX_LOSS_HARVEST §475-gated, ROTATE, EXIT_WEAK), surfaced in Next Actions + `GET /api/propose-sells` + the premarket cron feed. Tests 91→104. Prior: Ask-AI Q&A bar; wash-sale Layer-1 guard; limit-bracket orders; OrderReviewModal; double-submit prevention; Refresh-BUY Telegram alerts; premarket + launchd fixes.
+> **Date:** 2026-06-06 (end of session 6)
+> **Branch:** `main` (== `feat/algo-claude-improvements`; PR #7 merged). Default branch is `main`; work can continue on either, deploys trigger on push to `main`.
 >
-> ✅ **Backend restarted 2026-06-03 23:38 and now serving the new code** (`/api/propose-sells` returns 200; LiveAgent autostarted, 154 tickers / 9 held). BUT it was started MANUALLY in the foreground/background (`uv run uvicorn backend.api:app`), NOT via launchd — the `com.nuroq.backend` launchd job is failing with **exit 78 (EX_CONFIG)** and wrote no logs on kickstart, i.e. the documented `~/Documents` TCC / Full-Disk-Access block. The manual process won't survive a reboot/logout. **TODO:** re-grant Full Disk Access (System Settings → Privacy & Security → Full Disk Access → `/opt/homebrew/bin/uv` + `/bin/sh`) then `launchctl kickstart -k gui/$(id -u)/com.nuroq.backend` for durable autostart.
+> ## 🚀 NuroQ is LIVE in the cloud
+> - **URL:** **https://nuroq.nuroquant.com** (HTTPS via a named Cloudflare tunnel). Open `…/?api_key=<KEY>` once to set the auth cookie, then the bare URL works on any device.
+> - **API key:** `gcloud secrets versions access latest --secret=NUROQ_API_KEY --project=nuroq-prod-anildara` (sent as `X-NuroQ-Key` header or `?api_key=`).
+> - **Infra:** GCP project `nuroq-prod-anildara`; GCE **e2-medium** VM `nuroq-backend` @ static IP **34.9.20.141** (us-central1-a, **80GB** boot disk). Container = React UI + FastAPI + live agent + cloudflared, all in one image (`deploy/Dockerfile.cloud`, multi-stage, CPU-only torch). **Gemini via Vertex AI** (VM service account, no key). Secrets in Secret Manager; SQLite + tunnel log on host-path `/var/lib/nuroq` → `/data`. Scheduler (research 03:30 ET / proposals 08:00 ET) + live agent autostart. **Paper trading only.**
+> - **Deploy:** auto on push to `main` (GitHub Actions + **Workload Identity Federation**, no stored key — `.github/workflows/deploy.yml`). Manual: `PROJECT_ID=nuroq-prod-anildara ./deploy/deploy_gce.sh` (idempotent; reads CLOUDFLARED_TOKEN from Secret Manager). Direct static-IP access (`http://34.9.20.141:8000`) is owner-IP-firewalled.
+> - **Tests:** `./.venv/bin/python master_test_suite.py` → **110/110**.
+>
+> **Top open items:** confirm the merge-to-main auto-deploy went green · Today "Design lab" cleanup (4 layout variants → pick 1) · boot-disk snapshots for backup · iOS re-point to the new URL. Live trading still OFF.
+>
+> **Deploy gotchas already solved (don't re-hit):** named-tunnel route service must be **http**://localhost:8000 (not https → 502); CPU torch keeps the image ~1.5GB (CUDA torch filled the disk); `update-container` reassigns ephemeral IPs so a **static IP** is attached; the credential-helper token lacks `workflow` scope so **API merges strip `.github/workflows/`** — merge via `git` or verify after.
 
 ---
 
