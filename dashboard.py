@@ -146,11 +146,13 @@ class EnsembleAnalyst:
             self._remote = make_backend(self.backend)
             logger.log(f"🚀 AI backend ready: {self._remote.describe()}")
 
-    def analyze(self, prompt, model_key="gemma", structured=False):
+    def analyze(self, prompt, model_key="gemma", structured=False, max_tokens=500):
         # Cloud path: delegate raw generation to the configured backend. No
         # Metal command buffer to serialize, so no _gemma_lock here (the backend
         # bounds its own concurrency). `structured=True` (scoring) asks the cloud
         # backend for schema-constrained JSON; Gemma ignores it (DPO-trained format).
+        # `max_tokens` only affects the local Gemma path — Gemini sizes from its
+        # own max_output_tokens config.
         if self.backend != "gemma":
             if self._remote is None:
                 self.load_all()
@@ -169,7 +171,7 @@ class EnsembleAnalyst:
                 m, t,
                 prompt=prompt,
                 sampler=sampler,
-                max_tokens=500,
+                max_tokens=max_tokens,
             )
         return response
 
@@ -3280,7 +3282,10 @@ LIVE AGENT ACTIVITY (last 24h):
 ### Concise explanation (3-5 sentences) of why the account is {direction} today:"""
 
     try:
-        answer = (analyst.analyze(prompt) or "").strip()
+        # Bigger ceiling than the per-ticker scoring path — the prompt's larger
+        # (glossary + market + news) and the 500-token default was clipping the
+        # final sentence mid-word.
+        answer = (analyst.analyze(prompt, max_tokens=900) or "").strip()
         # Strip any leaked scaffolding markers.
         answer = re.sub(r'<think>.*?</think>', '', answer, flags=re.DOTALL).strip()
         for marker in ("### Instruction", "### Concise", "=== END", "=== TODAY"):
@@ -3374,7 +3379,8 @@ LIVE AGENT ACTIVITY (last 24h):
 ### Answer (grounded in the context above; pick the right scope per the rules):"""
 
     try:
-        answer = (analyst.analyze(prompt) or "").strip()
+        # See build_portfolio_insight — same rationale for the bigger ceiling.
+        answer = (analyst.analyze(prompt, max_tokens=900) or "").strip()
         answer = re.sub(r'<think>.*?</think>', '', answer, flags=re.DOTALL).strip()
         for marker in ("### Answer", "### Question", "=== END", "### Instruction"):
             if marker in answer:
