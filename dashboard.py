@@ -2917,6 +2917,130 @@ _market_ctx_cache: dict = {"at": 0, "data": None}
 _MARKET_SYMBOLS = ["SPY", "QQQ", "DIA", "IWM", "^VIX"]
 
 
+# Ticker → (company name, industry) static map. The prompt builders splice
+# this into a "TICKER GLOSSARY" section so Gemma stops guessing company names
+# (it had reproducible weak spots: SAN → "SanDisk" (actually Banco Santander),
+# V → "Verizon" (actually Visa), SONY → unsure, etc.). Covers:
+#   • Benchmarks/ETFs not in fundamentals_cache (SPY, QQQ, …, VIX).
+#   • Single-letter and short-symbol tickers Gemma reliably mixes up.
+#   • Common large-cap names users hold and the cache hasn't filled yet.
+# Anything not here AND not in fundamentals_cache → marked "(name unknown)"
+# in the glossary, with explicit "do NOT invent" guidance to the model.
+_TICKER_LABELS: dict[str, tuple[str, str]] = {
+    # — Index / market ETFs —
+    "SPY":  ("SPDR S&P 500 ETF",                "US large-cap index ETF"),
+    "VOO":  ("Vanguard S&P 500 ETF",            "US large-cap index ETF"),
+    "IVV":  ("iShares Core S&P 500 ETF",        "US large-cap index ETF"),
+    "QQQ":  ("Invesco QQQ (Nasdaq-100)",        "US large-cap tech ETF"),
+    "DIA":  ("SPDR Dow Jones Industrial ETF",   "US blue-chip ETF"),
+    "IWM":  ("iShares Russell 2000 ETF",        "US small-cap ETF"),
+    "VTI":  ("Vanguard Total Stock Market ETF", "US broad-market ETF"),
+    "EFA":  ("iShares MSCI EAFE ETF",           "Developed-ex-US ETF"),
+    "EEM":  ("iShares MSCI Emerging Markets",   "Emerging-markets ETF"),
+    "GLD":  ("SPDR Gold Shares",                "Gold commodity ETF"),
+    "SLV":  ("iShares Silver Trust",            "Silver commodity ETF"),
+    "TLT":  ("iShares 20+ Year Treasury Bond",  "Long-duration Treasury ETF"),
+    "^VIX": ("CBOE Volatility Index",           "Implied-volatility benchmark"),
+    # — Single-letter / commonly confused —
+    "V":    ("Visa Inc.",                       "Financial services / payments"),
+    "MA":   ("Mastercard Inc.",                 "Financial services / payments"),
+    "F":    ("Ford Motor Co.",                  "Automotive"),
+    "GM":   ("General Motors Co.",              "Automotive"),
+    "T":    ("AT&T Inc.",                       "Telecom"),
+    "VZ":   ("Verizon Communications",          "Telecom"),
+    "X":    ("United States Steel Corp.",       "Steel / materials"),
+    "C":    ("Citigroup Inc.",                  "Banks"),
+    "M":    ("Macy's Inc.",                     "Retail"),
+    # — Mag-7 / mega-cap tech —
+    "AAPL": ("Apple Inc.",                      "Consumer electronics"),
+    "MSFT": ("Microsoft Corp.",                 "Software / cloud"),
+    "GOOG": ("Alphabet Inc. (Class C)",         "Internet / advertising"),
+    "GOOGL":("Alphabet Inc. (Class A)",         "Internet / advertising"),
+    "AMZN": ("Amazon.com Inc.",                 "E-commerce / cloud"),
+    "META": ("Meta Platforms Inc.",             "Social media / advertising"),
+    "NVDA": ("NVIDIA Corp.",                    "Semiconductors / AI"),
+    "TSLA": ("Tesla Inc.",                      "Automotive / energy"),
+    # — Semis / hardware —
+    "AMD":  ("Advanced Micro Devices",          "Semiconductors"),
+    "INTC": ("Intel Corp.",                     "Semiconductors"),
+    "MU":   ("Micron Technology",               "Semiconductors / memory"),
+    "TSM":  ("Taiwan Semiconductor",            "Semiconductor foundry"),
+    "AVGO": ("Broadcom Inc.",                   "Semiconductors"),
+    "QCOM": ("Qualcomm Inc.",                   "Semiconductors / wireless"),
+    "ASML": ("ASML Holding",                    "Semiconductor lithography"),
+    # — Financials / payments —
+    "JPM":  ("JPMorgan Chase",                  "Diversified banks"),
+    "BAC":  ("Bank of America",                 "Diversified banks"),
+    "WFC":  ("Wells Fargo",                     "Diversified banks"),
+    "GS":   ("Goldman Sachs",                   "Investment banking"),
+    "MS":   ("Morgan Stanley",                  "Investment banking"),
+    "PYPL": ("PayPal Holdings",                 "Financial services / payments"),
+    # — Healthcare —
+    "JNJ":  ("Johnson & Johnson",               "Healthcare conglomerate"),
+    "PFE":  ("Pfizer Inc.",                     "Pharmaceuticals"),
+    "MRK":  ("Merck & Co.",                     "Pharmaceuticals"),
+    "UNH":  ("UnitedHealth Group",              "Health insurance"),
+    "LLY":  ("Eli Lilly & Co.",                 "Pharmaceuticals"),
+    # — Consumer —
+    "DIS":  ("Walt Disney Co.",                 "Media / entertainment"),
+    "NFLX": ("Netflix Inc.",                    "Streaming media"),
+    "HD":   ("Home Depot Inc.",                 "Home-improvement retail"),
+    "WMT":  ("Walmart Inc.",                    "Discount retail"),
+    "COST": ("Costco Wholesale",                "Warehouse retail"),
+    "PG":   ("Procter & Gamble",                "Consumer staples"),
+    "KO":   ("Coca-Cola Co.",                   "Beverages"),
+    "PEP":  ("PepsiCo Inc.",                    "Beverages / snacks"),
+    # — Industrials —
+    "BA":   ("Boeing Co.",                      "Aerospace / defense"),
+    "CAT":  ("Caterpillar Inc.",                "Heavy machinery"),
+    "GE":   ("GE Aerospace",                    "Aerospace / industrials"),
+    # — International ADRs & holdings users actually have —
+    "SAN":  ("Banco Santander S.A.",            "Spanish banking"),
+    "SONY": ("Sony Group Corp.",                "Consumer electronics / media"),
+    "BABA": ("Alibaba Group",                   "Chinese e-commerce"),
+    "NIO":  ("NIO Inc.",                        "Chinese EVs"),
+    # — Newer / growth / common —
+    "UBER": ("Uber Technologies",               "Ride-hail / delivery"),
+    "ABNB": ("Airbnb Inc.",                     "Travel marketplace"),
+    "SHOP": ("Shopify Inc.",                    "E-commerce software"),
+    "SNOW": ("Snowflake Inc.",                  "Cloud data warehousing"),
+    "PLTR": ("Palantir Technologies",           "Data analytics / defense"),
+    "COIN": ("Coinbase Global",                 "Crypto exchange"),
+    "RIVN": ("Rivian Automotive",               "Electric vehicles"),
+}
+
+
+def _ticker_glossary(symbols) -> str:
+    """Build a 'TICKER → company name' block for the prompt.
+
+    Priority: static map (curated, fast, covers benchmarks + the common
+    confusion-prone tickers) → fundamentals_cache (cached real names) →
+    explicit "(name unknown)" mark. The "unknown" mark plus the prompt's
+    "do NOT invent" instruction is what eliminates the SAN→SanDisk class
+    of hallucinations even for niche holdings.
+    """
+    seen, rows = set(), []
+    for raw in symbols or []:
+        sym = (raw or "").upper().strip()
+        if not sym or sym in seen:
+            continue
+        seen.add(sym)
+        if sym in _TICKER_LABELS:
+            name, industry = _TICKER_LABELS[sym]
+        else:
+            try:
+                f = fundamentals_cache.get(sym) or {}
+            except Exception:
+                f = {}
+            name = (f.get("name") or "").strip()
+            industry = (f.get("industry") or "").strip() or "—"
+            if not name:
+                rows.append(f"  {sym}: (company name unknown — cite the ticker symbol, do NOT invent)")
+                continue
+        rows.append(f"  {sym}: {name} ({industry})")
+    return "\n".join(rows) if rows else ""
+
+
 def _market_today() -> dict:
     """Today's snapshot for the major benchmarks. Returns {} on full failure
     so the prompt builder can gracefully omit the section. 60s cache."""
@@ -3050,6 +3174,16 @@ def _portfolio_context_lines() -> dict:
     if market:
         sources.append("market benchmarks")
 
+    # Ticker → company glossary. Held positions + benchmarks + tickers
+    # appearing in agent triggers (so the AI can name them if asked).
+    glossary_syms: list[str] = []
+    glossary_syms.extend(p["symbol"] for p in positions)
+    glossary_syms.extend(_MARKET_SYMBOLS)
+    glossary_syms.extend(line.split()[1] for line in trigger_lines if len(line.split()) >= 2)
+    glossary_block = _ticker_glossary(glossary_syms)
+    if glossary_block:
+        sources.append("ticker glossary")
+
     return {
         "acct":           acct,
         "positions":      positions,
@@ -3060,6 +3194,7 @@ def _portfolio_context_lines() -> dict:
         "trigger_block":  "\n".join(trigger_lines[:6]) or "(no agent activity in last 24h)",
         "market":         market,
         "market_block":   _market_block(market),
+        "glossary_block": glossary_block or "(no glossary)",
         "sources":        sources,
     }
 
@@ -3116,6 +3251,14 @@ The user wants a concise explanation of why their paper-trading account is {dire
 Use ONLY the context below. Cite SPECIFIC tickers and dollar amounts. 3-5 sentences,
 no preamble, no disclaimers, no generic market commentary. When comparing the
 account's move to the broader market, refer to the MARKET TODAY benchmarks.{vs_spy_hint}
+
+When referring to a stock by company name, use ONLY names from the TICKER GLOSSARY
+below. If a ticker is not in the glossary, cite the ticker symbol only — do NOT
+invent or guess a company name (this is a hard requirement; SAN is not SanDisk,
+V is not Verizon, etc. — trust the glossary).
+
+=== TICKER GLOSSARY (use ONLY these names; if a ticker is missing, use the symbol) ===
+{ctx['glossary_block']}
 
 === TODAY'S ACCOUNT SNAPSHOT ===
 Equity: ${equity:,.2f}
@@ -3201,6 +3344,13 @@ CRUCIAL — answer in the right scope:
 - If the question is about "my account", "my P&L", a specific holding, or the agent → use the USER'S ACCOUNT section.
 - If both → answer the market part first, then how the account did vs that.
 If the context doesn't contain the answer, say so plainly — do NOT invent. 3-6 sentences, no preamble, no disclaimers.
+
+When referring to a stock by company name, use ONLY names from the TICKER GLOSSARY
+below. If a ticker is not in the glossary, cite the ticker symbol only — do NOT
+invent or guess a company name (SAN is not SanDisk; V is not Verizon).
+
+=== TICKER GLOSSARY (use ONLY these names; if a ticker is missing, use the symbol) ===
+{ctx['glossary_block']}
 
 === USER'S ACCOUNT (live, paper-trading) ===
 Equity: ${equity:,.2f}
