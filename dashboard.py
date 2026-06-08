@@ -2909,6 +2909,57 @@ _PORTFOLIO_INSIGHT_TTL_SEC = 5 * 60
 _portfolio_insight_cache: dict = {"key": None, "at": 0, "result": None}
 
 
+# Market benchmarks for the insight prompt. SPY+QQQ for breadth, ^VIX for
+# regime, DIA for blue-chip, IWM for small-cap — answers "how's the market?"
+# without forcing the user to ask each one. Cached for 60s so concurrent
+# /insight + /ask calls share the same fetch.
+_market_ctx_cache: dict = {"at": 0, "data": None}
+_MARKET_SYMBOLS = ["SPY", "QQQ", "DIA", "IWM", "^VIX"]
+
+
+def _market_today() -> dict:
+    """Today's snapshot for the major benchmarks. Returns {} on full failure
+    so the prompt builder can gracefully omit the section. 60s cache."""
+    now = time.time()
+    if _market_ctx_cache["data"] is not None and now - _market_ctx_cache["at"] < 60:
+        return _market_ctx_cache["data"]
+    out: dict = {}
+    try:
+        for sym in _MARKET_SYMBOLS:
+            try:
+                t = yf.Ticker(sym)
+                fi = getattr(t, "fast_info", None) or {}
+                cur = float(getattr(fi, "last_price", None) or fi.get("last_price") or 0)
+                prev = float(getattr(fi, "previous_close", None) or fi.get("previous_close") or 0)
+                if cur and prev:
+                    out[sym] = {
+                        "price":      cur,
+                        "prev_close": prev,
+                        "change_pct": (cur - prev) / prev * 100,
+                    }
+            except Exception:
+                continue
+    except Exception:
+        pass
+    _market_ctx_cache.update(at=now, data=out)
+    return out
+
+
+def _market_block(market: dict) -> str:
+    if not market:
+        return "(market benchmarks unavailable)"
+    label = {"SPY": "S&P 500 (SPY)", "QQQ": "Nasdaq-100 (QQQ)",
+             "DIA": "Dow (DIA)", "IWM": "Russell-2000 (IWM)",
+             "^VIX": "VIX"}
+    lines = []
+    for sym in _MARKET_SYMBOLS:
+        m = market.get(sym)
+        if not m:
+            continue
+        lines.append(f"  {label.get(sym, sym)}: ${m['price']:.2f} ({m['change_pct']:+.2f}% today)")
+    return "\n".join(lines) or "(market benchmarks unavailable)"
+
+
 def _portfolio_context_lines() -> dict:
     """Compact, prompt-friendly view of the user's account state.
 
@@ -2993,6 +3044,12 @@ def _portfolio_context_lines() -> dict:
     except Exception:
         pass
 
+    # Broader-market benchmarks. Lets the AI answer "how's the market?"
+    # questions without conflating market context with the user's holdings.
+    market = _market_today()
+    if market:
+        sources.append("market benchmarks")
+
     return {
         "acct":           acct,
         "positions":      positions,
@@ -3001,6 +3058,8 @@ def _portfolio_context_lines() -> dict:
         "pos_block":      pos_block.strip() or "(no positions)",
         "news_block":     news_block or "(no fresh news in cache)",
         "trigger_block":  "\n".join(trigger_lines[:6]) or "(no agent activity in last 24h)",
+        "market":         market,
+        "market_block":   _market_block(market),
         "sources":        sources,
     }
 
@@ -3041,10 +3100,22 @@ def build_portfolio_insight(force: bool = False) -> dict:
         return _portfolio_insight_cache["result"]
 
     direction = "UP" if pnl_d >= 0 else "DOWN"
+    # Pre-compute vs-SPY delta so the model doesn't have to reason about sign
+    # of subtraction (Gemma occasionally calls "less negative" lagging when
+    # it's actually outperforming).
+    spy_pct = (ctx.get("market") or {}).get("SPY", {}).get("change_pct")
+    vs_spy_hint = ""
+    if spy_pct is not None:
+        delta = pnl_p - spy_pct
+        label = "OUTPERFORMING" if delta > 0.05 else ("UNDERPERFORMING" if delta < -0.05 else "matching")
+        vs_spy_hint = (f"\nIMPORTANT relative-performance fact: account is {pnl_p:+.2f}% vs SPY "
+                       f"{spy_pct:+.2f}%, so the account is {label} the S&P by {delta:+.2f}pp today. "
+                       f"Do NOT say 'lagging' if {label} is OUTPERFORMING.")
     prompt = f"""### Instruction: You are a hedge-fund market analyst.
 The user wants a concise explanation of why their paper-trading account is {direction} today.
 Use ONLY the context below. Cite SPECIFIC tickers and dollar amounts. 3-5 sentences,
-no preamble, no disclaimers, no generic market commentary.
+no preamble, no disclaimers, no generic market commentary. When comparing the
+account's move to the broader market, refer to the MARKET TODAY benchmarks.{vs_spy_hint}
 
 === TODAY'S ACCOUNT SNAPSHOT ===
 Equity: ${equity:,.2f}
@@ -3052,6 +3123,9 @@ Today's P&L: {'+' if pnl_d >= 0 else ''}${pnl_d:,.2f} ({pnl_p:+.2f}%)
 Cash: ${float(acct.get('cash') or 0):,.2f}  Buying power: ${float(acct.get('buying_power') or 0):,.0f}
 
 {ctx['pos_block']}
+
+=== MARKET TODAY (broader benchmarks — NOT the user's positions) ===
+{ctx['market_block']}
 
 RECENT NEWS (last 24h, for held tickers):
 {ctx['news_block']}
@@ -3119,15 +3193,24 @@ def ask_portfolio_question(question: str) -> dict:
     pnl_p = float(acct.get("todays_pl_pct") or 0)
     equity = float(acct.get("equity") or 0)
 
-    prompt = f"""### Instruction: You are a hedge-fund market analyst answering a user's question about their paper-trading account.
-Use ONLY the context below. Cite SPECIFIC tickers, dollar amounts, and dates from the context. If the context doesn't contain the answer, say so plainly — do NOT invent specifics. 3-6 sentences. No preamble, no disclaimers.
+    prompt = f"""### Instruction: You are a hedge-fund market analyst answering a user's question.
+Use ONLY the context below. Cite SPECIFIC tickers, dollar amounts, and dates from the context.
 
-=== USER'S ACCOUNT (live) ===
+CRUCIAL — answer in the right scope:
+- If the question is about "the market", "stocks in general", indices, SPY/QQQ/Dow/VIX, sectors, or macro → use the MARKET TODAY section. Do NOT describe the user's portfolio as if it were the market.
+- If the question is about "my account", "my P&L", a specific holding, or the agent → use the USER'S ACCOUNT section.
+- If both → answer the market part first, then how the account did vs that.
+If the context doesn't contain the answer, say so plainly — do NOT invent. 3-6 sentences, no preamble, no disclaimers.
+
+=== USER'S ACCOUNT (live, paper-trading) ===
 Equity: ${equity:,.2f}
 Today's P&L: {'+' if pnl_d >= 0 else ''}${pnl_d:,.2f} ({pnl_p:+.2f}%)
 Cash: ${float(acct.get('cash') or 0):,.2f}
 
 {ctx['pos_block']}
+
+=== MARKET TODAY (broader benchmarks — NOT the user's positions) ===
+{ctx['market_block']}
 
 RECENT NEWS (last 24h, for held tickers):
 {ctx['news_block']}
@@ -3138,7 +3221,7 @@ LIVE AGENT ACTIVITY (last 24h):
 
 ### User's question: {question}
 
-### Answer (grounded in the context above, specific to the user's account):"""
+### Answer (grounded in the context above; pick the right scope per the rules):"""
 
     try:
         answer = (analyst.analyze(prompt) or "").strip()
