@@ -2,7 +2,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Area, AreaChart, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine,
 } from "recharts";
-import { Briefcase, RefreshCw, Trash2, TrendingUp, TrendingDown, Wallet } from "lucide-react";
+import { Briefcase, RefreshCw, Trash2, TrendingUp, TrendingDown, Wallet, Scale } from "lucide-react";
 import { useState } from "react";
 import { api } from "../lib/api";
 import { cn, fmtUSD, fmtPct } from "../lib/cn";
@@ -25,6 +25,15 @@ export function PortfolioView({ onDrillIn }: Props) {
     queryKey: ["alpaca-history", range], queryFn: () => api.alpacaHistory(range),
     refetchInterval: 5 * 60_000,
   });
+  // Account-level metrics from Alpaca: equity, cash, positions_value.
+  // Needed to surface margin/leverage — summing position MVs gives the GROSS
+  // exposure (what NuroQ used to show as "Total Value"), but account equity is
+  // gross MV minus the cash deficit when on margin. Casual viewers were reading
+  // gross-MV as "my account is worth this" — which is wrong on margin. We now
+  // show both, clearly labeled, with a leverage indicator.
+  const acct = useQuery({
+    queryKey: ["alpaca-summary"], queryFn: api.alpacaSummary, refetchInterval: 60_000,
+  });
 
   const removeMut = useMutation({
     mutationFn: (t: string) => api.removePosition(t),
@@ -33,11 +42,23 @@ export function PortfolioView({ onDrillIn }: Props) {
   });
 
   const rows = data ?? [];
-  // Cost basis = avg cost × shares; value = current × shares (total_value from API).
+  // Per-position math (cost = avg×shares; MV = current×shares from API).
   const totalCost  = rows.reduce((s, r) => s + r.avg_price * r.shares, 0);
   const totalValue = rows.reduce((s, r) => s + r.total_value, 0);
   const totalPnl   = totalValue - totalCost;
   const totalPnlPct = totalCost > 0 ? (totalPnl / totalCost) * 100 : 0;
+
+  // Account-level (Alpaca-truthed). Prefer Alpaca's `positions_value` to
+  // tolerate any per-row rounding drift, but fall back to summed row MVs if
+  // the account call hasn't loaded yet.
+  const equity         = acct.data?.equity ?? totalValue;
+  const cash           = acct.data?.cash ?? 0;
+  const positionsValue = acct.data?.positions_value ?? totalValue;
+  // On margin when cash is negative — borrowing against equity to hold more
+  // stock than the equity alone would allow. Leverage = positions / equity.
+  const onMargin       = cash < 0 && equity > 0;
+  const leverage       = onMargin ? positionsValue / equity : 1;
+  const marginUsed     = onMargin ? -cash : 0;
 
   return (
     <div className="max-w-7xl mx-auto space-y-3">
@@ -68,23 +89,33 @@ export function PortfolioView({ onDrillIn }: Props) {
         </div>
       ) : (
         <>
-          {/* Summary stat cards */}
+          {/* Summary stat cards. The PRIMARY number is Account Equity — this
+              is what Alpaca's UI shows as "Total Equity" and what gets actually
+              liquidated. "Market Value" is the gross positions exposure, which
+              exceeds equity when on margin. We surface both with their
+              relationship explicit, so the equity vs gross-MV confusion can't
+              recur. */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             <StatCard
-              icon={Wallet} label="Cost Basis"
-              value={fmtUSD(totalCost)}
-              sub={`${rows.length} positions`}
+              icon={Wallet} label="Account Equity"
+              value={fmtUSD(equity)}
+              sub={onMargin
+                ? `${fmtUSD(marginUsed)} margin used`
+                : `${fmtUSD(cash)} cash`}
+              tone={onMargin ? "warn" : undefined}
             />
             <StatCard
-              icon={Briefcase} label="Market Value"
-              value={fmtUSD(totalValue)}
-              sub="current"
+              icon={Briefcase} label="Positions Value"
+              value={fmtUSD(positionsValue)}
+              sub={onMargin
+                ? `${leverage.toFixed(2)}× leverage · gross`
+                : `${rows.length} positions · gross`}
             />
             <StatCard
               icon={totalPnl >= 0 ? TrendingUp : TrendingDown}
               label="Unrealized P&L"
               value={`${totalPnl >= 0 ? "+" : ""}${fmtUSD(totalPnl)}`}
-              sub={fmtPct(totalPnlPct)}
+              sub={`${fmtPct(totalPnlPct)} · cost ${fmtUSD(totalCost)}`}
               tone={totalPnl >= 0 ? "buy" : "sell"}
             />
             <StatCard
@@ -95,6 +126,21 @@ export function PortfolioView({ onDrillIn }: Props) {
               tone={hist.data ? (hist.data.return_pct >= 0 ? "buy" : "sell") : undefined}
             />
           </div>
+
+          {/* Margin banner: only when on margin, give the equity = MV − debt
+              math explicitly. Removes ambiguity for casual viewers. */}
+          {onMargin && (
+            <div className="card card-tight flex items-start gap-2 text-xxs border-amber-500/40 bg-amber-500/5">
+              <Scale className="w-3.5 h-3.5 text-amber-500 shrink-0 mt-0.5" />
+              <div className="opacity-90">
+                <span className="font-semibold">On margin:</span>{" "}
+                <span className="font-mono">{fmtUSD(positionsValue)}</span> positions
+                {" − "}<span className="font-mono">{fmtUSD(marginUsed)}</span> borrowed
+                {" = "}<span className="font-mono font-semibold">{fmtUSD(equity)}</span> equity
+                {" "}<span className="opacity-60">(matches Alpaca's "Total Equity").</span>
+              </div>
+            </div>
+          )}
 
           {/* Equity curve chart */}
           <EquityChart hist={hist.data} range={range} setRange={setRange} loading={hist.isFetching} />
@@ -191,7 +237,7 @@ function StatCard({
   icon: Icon, label, value, sub, tone,
 }: {
   icon: typeof Wallet; label: string; value: string; sub?: string;
-  tone?: "buy" | "sell";
+  tone?: "buy" | "sell" | "warn";
 }) {
   return (
     <div className="card card-tight">
@@ -202,6 +248,7 @@ function StatCard({
         "text-xl font-mono font-bold leading-none",
         tone === "buy" && "text-buy",
         tone === "sell" && "text-sell",
+        tone === "warn" && "text-amber-500",
       )}>{value}</div>
       {sub && <div className="text-xxs opacity-50 mt-1 font-mono">{sub}</div>}
     </div>
