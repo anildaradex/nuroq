@@ -182,18 +182,66 @@ class TestExecutionPortfolio(unittest.TestCase):
             os.remove(test_db)
 
     def test_portfolio_manager(self):
-        """Test portfolio manager adds and removes correctly (SQLite)."""
-        import tempfile
+        """Test portfolio manager adds and removes correctly (SQLite).
+
+        Mocks `alpaca_api.list_positions` to return None so `get_portfolio`
+        falls back to the DB read path — otherwise it returns the live
+        Alpaca account state (not the seeded test row).
+        """
+        import tempfile, dashboard
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+            test_db = tmp.name
+        try:
+            with patch.object(dashboard.alpaca_api, "list_positions", return_value=None):
+                pm = PortfolioManager(db_path=test_db)
+                pm.add_position("NVDA", 10, 100.0)
+                df = pm.get_portfolio()
+                self.assertIn("NVDA", df['Ticker'].values)
+                pm.remove_position("NVDA")
+                df_after = pm.get_portfolio()
+                self.assertNotIn("NVDA", df_after['Ticker'].values)
+        finally:
+            os.remove(test_db)
+
+    def test_get_portfolio_uses_alpaca_as_source_of_truth(self):
+        """get_portfolio must return ALPACA'S qty/avg/MV/PnL when reachable,
+        joined to local SL/TP/AI/entry_date metadata by ticker. Even if the
+        local DB has a stale snapshot, the live read returns Alpaca's truth.
+
+        Regression for the 2026-06-07 NVDA/SAN drift bug: the DB row no longer
+        controls what users see in Portfolio — that's Alpaca's job — so the
+        same drift can't surface as "out of sync" anymore.
+        """
+        import tempfile, dashboard
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
             test_db = tmp.name
         try:
             pm = PortfolioManager(db_path=test_db)
-            pm.add_position("NVDA", 10, 100.0)
-            df = pm.get_portfolio()
-            self.assertIn("NVDA", df['Ticker'].values)
-            pm.remove_position("NVDA")
-            df_after = pm.get_portfolio()
-            self.assertNotIn("NVDA", df_after['Ticker'].values)
+            # Seed a STALE local row (qty/avg deliberately wrong) plus the
+            # metadata Alpaca doesn't know about.
+            pm.add_position("NVDA", 60, 215.33, sl=200, tp=250, score=68, rating="BUY")
+
+            # Alpaca's truth: 4.75 @ 210.74, MV 1000, PnL -10%.
+            live = [{
+                "symbol": "NVDA", "qty": 4.75, "avg_entry_price": 210.74,
+                "current_price": 189.67, "market_value": 1000.0,
+                "unrealized_pl": -100.0, "unrealized_plpc": -0.10,
+            }]
+            with patch.object(dashboard.alpaca_api, "list_positions", return_value=live):
+                df = pm.get_portfolio()
+
+            row = df[df['Ticker'] == 'NVDA'].iloc[0]
+            # Alpaca wins on these (the drifted local 60/215.33 must NOT leak):
+            self.assertAlmostEqual(float(row['Shares']),    4.75,   places=4)
+            self.assertAlmostEqual(float(row['Avg Price']), 210.74, places=4)
+            self.assertAlmostEqual(float(row['Current Price']), 189.67, places=4)
+            self.assertAlmostEqual(float(row['Total Value']),  1000.0, places=2)
+            self.assertAlmostEqual(float(row['PnL %']),       -10.0,  places=2)
+            # Local metadata is joined in:
+            self.assertAlmostEqual(float(row['Stop Loss']),   200.0)
+            self.assertAlmostEqual(float(row['Take Profit']), 250.0)
+            self.assertEqual(row['AI Rating'], 'BUY')
+            self.assertAlmostEqual(float(row['AI Score']), 68.0)
         finally:
             os.remove(test_db)
 

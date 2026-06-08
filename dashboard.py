@@ -653,13 +653,106 @@ class PortfolioManager:
                     pass
 
     def get_portfolio(self):
+        """Return positions as a DataFrame, with **Alpaca as the source of truth**
+        for live qty/avg/current_price/MV/PnL on every call.
+
+        The local `portfolio` table contributes only the NuroQ-side metadata
+        (stop_loss, take_profit, ai_score, ai_rating, entry_date), joined by
+        ticker. The qty/avg/current_price columns in the local DB are now just
+        a cold cache for the Alpaca-unreachable fallback path — they can drift
+        between reads without affecting what callers see, because every read
+        re-pulls Alpaca live.
+
+        Rationale: pre-refactor the local DB stored its own snapshot of
+        shares/avg/MV. Out-of-band Alpaca activity (partial fills, manual
+        sells, bracket triggers, fractional rounding) silently drifted the
+        snapshot, and the reconcile only did set membership. Hot-fixed
+        2026-06-07; this refactor makes the drift architecturally impossible.
+
+        Fallback: when `alpaca_api.list_positions()` returns None (network
+        error, rate limit, simulated mode), reads from the local DB instead.
+        Result is best-effort but never raises.
+        """
+        # 1) Local NuroQ metadata, keyed by ticker. Always cheap, used by both
+        #    the live-Alpaca path (as the join side) AND the fallback (as the
+        #    whole result). Read once.
+        local_meta = {}
         try:
             with sqlite3.connect(self.db_path) as conn:
-                df = pd.read_sql("SELECT ticker as Ticker, shares as Shares, avg_price as 'Avg Price', current_price as 'Current Price', total_value as 'Total Value', pnl_pct as 'PnL %', stop_loss as 'Stop Loss', take_profit as 'Take Profit', ai_score as 'AI Score', ai_rating as 'AI Rating', entry_date as 'Entry Date' FROM portfolio", conn)
+                for r in conn.execute(
+                    "SELECT ticker, shares, avg_price, current_price, total_value, "
+                    "pnl_pct, stop_loss, take_profit, ai_score, ai_rating, "
+                    "entry_date FROM portfolio"
+                ).fetchall():
+                    local_meta[r[0].upper()] = r
+        except Exception:
+            pass
+
+        # 2) Alpaca = source of truth. If unreachable, fall through to fallback.
+        live = None
+        try:
+            live = alpaca_api.list_positions()
+        except Exception as e:
+            logger.log(f"⚠️ get_portfolio: list_positions raised: {e}", level="WARNING")
+
+        if live is None:
+            # Alpaca down or simulated mode → serve the DB snapshot (stale).
+            return self._get_portfolio_from_db(local_meta)
+
+        # 3) Build the result from Alpaca's truth, joining local metadata in.
+        today = datetime.now().strftime("%Y-%m-%d")
+        rows = []
+        for p in live:
+            sym = p["symbol"].upper()
+            m = local_meta.get(sym)
+            shares = float(p["qty"])
+            avg    = float(p["avg_entry_price"])
+            cur    = float(p.get("current_price") or avg)
+            mv     = float(p.get("market_value")  or shares * cur)
+            # Prefer Alpaca's pre-computed plpc; fall back to derived.
+            pnl_pct = float(p.get("unrealized_plpc") or 0) * 100
+            if not pnl_pct and avg:
+                pnl_pct = (cur - avg) / avg * 100
+            rows.append({
+                "Ticker":        sym,
+                "Shares":        shares,
+                "Avg Price":     avg,
+                "Current Price": cur,
+                "Total Value":   round(mv, 2),
+                "PnL %":         round(pnl_pct, 2),
+                "Stop Loss":     (m[6] if m else 0) or 0,
+                "Take Profit":   (m[7] if m else 0) or 0,
+                "AI Score":      (m[8] if m else 0) or 0,
+                "AI Rating":     (m[9] if m else "IMPORTED"),
+                "Entry Date":    (m[10] if m else today),
+            })
+        df = pd.DataFrame(rows, columns=self.cols)
+        return df
+
+    def _get_portfolio_from_db(self, local_meta=None):
+        """Fallback reader: pull everything from the local cache table. Used by
+        `get_portfolio` only when Alpaca is unreachable. Note the result may be
+        stale — that's the cost of degraded mode.
+
+        Accepts a pre-fetched `local_meta` dict to avoid a redundant SELECT;
+        if None, queries fresh.
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                df = pd.read_sql(
+                    "SELECT ticker as Ticker, shares as Shares, "
+                    "avg_price as 'Avg Price', current_price as 'Current Price', "
+                    "total_value as 'Total Value', pnl_pct as 'PnL %', "
+                    "stop_loss as 'Stop Loss', take_profit as 'Take Profit', "
+                    "ai_score as 'AI Score', ai_rating as 'AI Rating', "
+                    "entry_date as 'Entry Date' FROM portfolio",
+                    conn,
+                )
             for c in self.cols:
-                if c not in df.columns: df[c] = "N/A"
+                if c not in df.columns:
+                    df[c] = "N/A"
             return df
-        except:
+        except Exception:
             return pd.DataFrame(columns=self.cols)
 
     def add_position(self, ticker, shares, price, sl=0, tp=0, score=0, rating="HOLD"):
@@ -704,9 +797,19 @@ class PortfolioManager:
 
         live_by_sym = {p["symbol"].upper(): p for p in live}
 
-        # Current local holdings
-        local_df = self.get_portfolio()
-        local_syms = set(local_df['Ticker'].str.upper()) if not local_df.empty else set()
+        # Current local holdings — read DB DIRECTLY here. `self.get_portfolio()`
+        # is now Alpaca-first (returns Alpaca's truth), so using it would make
+        # local_syms == set(live_by_sym.keys()) trivially, and steps 1+2 would
+        # be no-ops. Reconcile compares the DB *cache* to Alpaca; the cache is
+        # what we need here.
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                local_syms = {
+                    r[0].upper() for r in
+                    conn.execute("SELECT ticker FROM portfolio").fetchall()
+                }
+        except Exception:
+            local_syms = set()
 
         # 1. REMOVE phantoms (local but not at Alpaca)
         for t in list(local_syms):
