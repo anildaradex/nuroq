@@ -91,18 +91,29 @@ class GeminiBackend:
     def describe(self) -> str:
         return f"{self.model} ({self._auth})"
 
-    def generate(self, prompt: str, structured: bool = False) -> str:
+    def generate(self, prompt: str, structured: bool = False,
+                 max_tokens: int | None = None) -> str:
         """Generate text. `structured=True` (the scoring path) constrains output
         to the analysis JSON schema so the score/rating always parse; the Ask-AI
-        path leaves it False for free-form prose."""
+        path leaves it False for free-form prose.
+
+        `max_tokens`: per-call override of `max_output_tokens`. None → use the
+        instance default. Insight + portfolio Q&A pass a bigger number because
+        their prompts include glossary + market + news + agent activity and were
+        getting clipped mid-sentence at the default.
+        """
         from google.genai import types
 
-        cfg_kwargs = dict(
-            temperature=0.0,
-            # Scoring JSON needs headroom so a long reasoning field doesn't push
-            # the score key past the limit; free-text answers also get a bump.
-            max_output_tokens=2048 if structured else max(self.max_output_tokens, 1024),
-        )
+        # Resolve output ceiling. Per-call > instance default for non-structured.
+        # Structured (scoring JSON) still gets its own headroom of 2048.
+        if structured:
+            out_tokens = 2048
+        elif max_tokens is not None:
+            out_tokens = max(max_tokens, self.max_output_tokens, 1024)
+        else:
+            out_tokens = max(self.max_output_tokens, 1024)
+
+        cfg_kwargs = dict(temperature=0.0, max_output_tokens=out_tokens)
         if structured:
             cfg_kwargs["response_mime_type"] = "application/json"
             cfg_kwargs["response_schema"] = _ANALYSIS_SCHEMA
@@ -113,8 +124,23 @@ class GeminiBackend:
                 contents=prompt,
                 config=types.GenerateContentConfig(**cfg_kwargs),
             )
-        # `.text` concatenates the candidate's text parts; guard against None.
-        return getattr(resp, "text", None) or ""
+
+        text = getattr(resp, "text", None) or ""
+        # Diagnostic: if Gemini stopped because we ran out of tokens (rather
+        # than hit STOP), log it so we know to bump out_tokens.
+        try:
+            cand = (resp.candidates or [None])[0]
+            fr = getattr(cand, "finish_reason", None)
+            fr_str = getattr(fr, "name", None) or str(fr)
+            if fr_str and fr_str.upper() in ("MAX_TOKENS", "LENGTH"):
+                import logging
+                logging.getLogger(__name__).warning(
+                    f"Gemini hit {fr_str} at {out_tokens} max_output_tokens "
+                    f"(response was {len(text)} chars) — consider raising."
+                )
+        except Exception:
+            pass
+        return text
 
 
 def make_backend(name: str):
