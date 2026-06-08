@@ -540,17 +540,37 @@ class TradeGatekeeper:
             return "TIMEOUT"
 
     def send_notification(self, message: str) -> None:
-        """Fire-and-forget Telegram alert. Safe to call from any thread."""
-        if not self.app or not self.loop:
-            logger.log("⚠️ Gatekeeper not started; dropping notification.", level="WARNING")
-            return
-        try:
-            asyncio.run_coroutine_threadsafe(
-                self.app.bot.send_message(chat_id=self.chat_id, text=message),
-                self.loop,
-            )
-        except Exception as e:
-            logger.log(f"⚠️ Notification dispatch failed: {e}", level="WARNING")
+        """Fire-and-forget Telegram alert. Safe from any thread *or* process.
+
+        Uses Telegram's HTTPS bot API directly (`/sendMessage`) — does NOT
+        require the polling-side Application to be initialized. So this also
+        works in send-only contexts (preview server, cron scripts, batch jobs)
+        where `NUROQ_BACKGROUND_SERVICES=0` skipped the polling startup. The
+        old code path depended on `self.app` + `self.loop`, and every
+        notification from those send-only contexts was silently dropped with
+        a "Gatekeeper not started" warning.
+
+        Sending and polling are independent at Telegram's API too — multiple
+        processes can `sendMessage` without conflict (only `getUpdates` causes
+        the polling conflict the BACKGROUND_SERVICES gate is meant to avoid).
+
+        Non-blocking: spawns a daemon thread so a slow/down Telegram never
+        stalls the caller (the research cycle / live agent / scheduler).
+        """
+        if not self.token or not self.chat_id:
+            return  # Telegram not configured — silent no-op
+
+        def _send():
+            try:
+                requests.post(
+                    f"https://api.telegram.org/bot{self.token}/sendMessage",
+                    data={"chat_id": self.chat_id, "text": message},
+                    timeout=8,
+                )
+            except Exception as e:
+                logger.log(f"⚠️ Telegram send failed: {e}", level="WARNING")
+
+        threading.Thread(target=_send, name="telegram-send", daemon=True).start()
 
 class ShadowExecutor:
     def __init__(self, db_path=DB_PATH):
