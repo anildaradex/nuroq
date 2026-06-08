@@ -279,6 +279,34 @@ async function post<T>(url: string, body?: unknown): Promise<T> {
   return r.json();
 }
 
+export interface PortfolioContribution {
+  ticker: string;
+  intraday_pl: number;
+  change_pct: number;
+  market_value: number;
+}
+
+/** AI-generated "why am I up/down today" insight. */
+export interface Insight {
+  summary: string;
+  pnl_dollars: number;
+  pnl_pct: number;
+  equity: number;
+  top_contributors: PortfolioContribution[];
+  top_detractors: PortfolioContribution[];
+  sources: string[];
+  grounded: boolean;
+  generated_at: number;
+}
+
+/** Free-form Q&A answer about the user's portfolio (not a single ticker). */
+export interface PortfolioAsk {
+  question: string;
+  answer: string;
+  sources: string[];
+  grounded: boolean;
+}
+
 export interface ResearchStatus {
   active: boolean;
   progress: number;
@@ -339,6 +367,9 @@ export const api = {
   agentStop:      () => post<{ ok: boolean; message: string }>("/api/agent/stop"),
   researchCycle:  () => post<{ ok: boolean; message: string }>("/api/research-cycle"),
   researchStatus: () => get<ResearchStatus>("/api/research-cycle/status"),
+  insightToday:   (force = false) => get<Insight>(`/api/insight/today${force ? "?force=true" : ""}`),
+  askPortfolio:   (question: string) =>
+                    post<PortfolioAsk>("/api/ask-portfolio", { question }),
   // Scan is async (long-running): start it, then poll scanStatus until !running.
   scan: (mode: "top20" | "global") =>
     post<{ started: boolean; running: boolean; message: string }>("/api/scan", { mode }),

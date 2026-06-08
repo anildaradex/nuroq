@@ -258,25 +258,42 @@ class LiveAlpacaExecutor:
         """
         Full detail on every Alpaca position. Each item:
           {symbol, qty, avg_entry_price, current_price, market_value,
-           cost_basis, unrealized_pl, unrealized_plpc}
+           cost_basis, unrealized_pl, unrealized_plpc,
+           unrealized_intraday_pl, unrealized_intraday_plpc, change_today}
         Returns None on failure (so callers don't mistake an error for "flat").
         Used by the two-way portfolio reconcile to IMPORT positions that exist
         at Alpaca but aren't in the local tracker (e.g. opened outside NuroQ).
+        Intraday fields drive the Today insight panel ("why is the account up
+        or down TODAY?") — `unrealized_pl` is since-entry and would attribute
+        a big move from weeks ago to today, which is wrong for that question.
         """
         if not self._ensure_connection():
             return None
+
+        def _f(x, default=0.0):
+            # Alpaca occasionally returns None / "" / "nan"; coerce defensively.
+            try:
+                v = float(x) if x not in (None, "") else default
+                return v if v == v else default   # NaN guard
+            except (TypeError, ValueError):
+                return default
+
         try:
             out = []
             for p in self.client.get_all_positions():
                 out.append({
                     "symbol":          p.symbol.upper(),
-                    "qty":             float(p.qty),
-                    "avg_entry_price": float(p.avg_entry_price),
-                    "current_price":   float(p.current_price) if p.current_price else float(p.avg_entry_price),
-                    "market_value":    float(p.market_value) if p.market_value else 0.0,
-                    "cost_basis":      float(p.cost_basis) if p.cost_basis else 0.0,
-                    "unrealized_pl":   float(p.unrealized_pl) if p.unrealized_pl else 0.0,
-                    "unrealized_plpc": float(p.unrealized_plpc) if p.unrealized_plpc else 0.0,
+                    "qty":             _f(p.qty),
+                    "avg_entry_price": _f(p.avg_entry_price),
+                    "current_price":   _f(p.current_price, _f(p.avg_entry_price)),
+                    "market_value":    _f(p.market_value),
+                    "cost_basis":      _f(p.cost_basis),
+                    "unrealized_pl":   _f(p.unrealized_pl),
+                    "unrealized_plpc": _f(p.unrealized_plpc),
+                    # Today-only attribution — Alpaca computes from prev_close.
+                    "unrealized_intraday_pl":   _f(getattr(p, "unrealized_intraday_pl", None)),
+                    "unrealized_intraday_plpc": _f(getattr(p, "unrealized_intraday_plpc", None)),
+                    "change_today":             _f(getattr(p, "change_today", None)),
                 })
             return out
         except Exception as e:

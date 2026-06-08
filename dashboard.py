@@ -2895,6 +2895,275 @@ FILING / FUNDAMENTAL CONTEXT:
     }
 
 
+# ─── Portfolio-level Insight + Q&A ─────────────────────────────────────────
+#
+# Ticker-level Q&A (above) answers "why did NVDA move?". This block answers
+# "why is the WHOLE ACCOUNT up or down today?" and lets the user ask free-form
+# follow-ups about their entire portfolio. Reuses the same Gemma/Gemini chokepoint
+# at analyst.analyze(), reuses the same sources/grounded pattern.
+
+# Insight is auto-generated and tends to be expensive (3-5s of LLM time).
+# Memoize for 5 min keyed by (date, position-hash) so repeated SPA renders
+# don't re-burn the model. Refreshable by passing force=True.
+_PORTFOLIO_INSIGHT_TTL_SEC = 5 * 60
+_portfolio_insight_cache: dict = {"key": None, "at": 0, "result": None}
+
+
+def _portfolio_context_lines() -> dict:
+    """Compact, prompt-friendly view of the user's account state.
+
+    Pulled from already-existing helpers (Alpaca + caches), so this is cheap.
+    Returns a dict the prompt builders splice into their templates.
+    """
+    sources: list[str] = []
+
+    # Account-level (equity, cash, today's P&L). Best-effort.
+    try:
+        acct = alpaca_api.get_account_summary() or {}
+        if acct.get("connected"):
+            sources.append("Alpaca account")
+    except Exception:
+        acct = {}
+
+    # Per-position with TODAY-only attribution (intraday P&L from prev close,
+    # not total since-entry). Sorted by today's $ contribution.
+    try:
+        positions = alpaca_api.list_positions() or []
+        if positions:
+            sources.append("Alpaca positions")
+    except Exception:
+        positions = []
+
+    positions = sorted(positions, key=lambda p: p.get("unrealized_intraday_pl", 0), reverse=True)
+
+    def _fmt_pos(p, side="contrib") -> str:
+        ipl = p.get("unrealized_intraday_pl", 0)
+        ipct = p.get("change_today", 0) * 100
+        mv = p.get("market_value", 0)
+        return (f"{p['symbol']}: {'+' if ipl >= 0 else ''}${ipl:,.0f} today "
+                f"({ipct:+.2f}%) on ${mv:,.0f} held")
+
+    contributors = [p for p in positions if p.get("unrealized_intraday_pl", 0) > 0][:5]
+    detractors   = [p for p in positions if p.get("unrealized_intraday_pl", 0) < 0][-5:][::-1]
+
+    pos_block = ""
+    if contributors:
+        pos_block += "TOP CONTRIBUTORS TODAY:\n" + "\n".join(f"  • {_fmt_pos(p)}" for p in contributors) + "\n"
+    if detractors:
+        pos_block += "TOP DETRACTORS TODAY:\n" + "\n".join(f"  • {_fmt_pos(p)}" for p in detractors) + "\n"
+
+    # Recent news for HELD tickers (last 24h, cap so prompt stays bounded).
+    news_lines: list[str] = []
+    try:
+        held = {p["symbol"] for p in positions}
+        cutoff = time.time() - 24 * 3600
+        with sqlite3.connect(DB_PATH) as conn:
+            for sym in list(held)[:20]:   # bound the query
+                for h, c in conn.execute(
+                    "SELECT headline, classification FROM news_cache "
+                    "WHERE ticker = ? AND ingested_at > ? "
+                    "ORDER BY ingested_at DESC LIMIT 2",
+                    (sym, cutoff),
+                ).fetchall():
+                    news_lines.append(f"[{sym}/{c}] {h}")
+        if news_lines:
+            sources.append("news (24h)")
+    except Exception as e:
+        logger.log(f"⚠️ portfolio_context news read failed: {e}", level="WARNING")
+    news_block = "\n".join(news_lines[:12])   # cap to ~12 lines / ~1.5KB
+
+    # Recent agent activity (today's triggers) — what the bot DID.
+    trigger_lines: list[str] = []
+    try:
+        cutoff = time.time() - 24 * 3600
+        with sqlite3.connect(DB_PATH) as conn:
+            rows = conn.execute(
+                "SELECT ticker, action, direction, price, ts FROM live_triggers "
+                "WHERE ts > ? ORDER BY ts DESC LIMIT 10",
+                (cutoff,),
+            ).fetchall()
+        for tkr, action, direction, price, ts in rows:
+            trigger_lines.append(
+                f"{datetime.fromtimestamp(ts).strftime('%H:%M')} {tkr} "
+                f"{direction or ''} {action or ''}"
+                + (f" @ ${price:.2f}" if price else "")
+            )
+        if trigger_lines:
+            sources.append("agent log")
+    except Exception:
+        pass
+
+    return {
+        "acct":           acct,
+        "positions":      positions,
+        "contributors":   contributors,
+        "detractors":     detractors,
+        "pos_block":      pos_block.strip() or "(no positions)",
+        "news_block":     news_block or "(no fresh news in cache)",
+        "trigger_block":  "\n".join(trigger_lines[:6]) or "(no agent activity in last 24h)",
+        "sources":        sources,
+    }
+
+
+def build_portfolio_insight(force: bool = False) -> dict:
+    """Auto-generated "why am I up/down today" paragraph.
+
+    Cached for 5 min keyed by date + position-set + roughly-rounded P&L so
+    intraday refreshes don't re-burn LLM time for trivial moves. Pass
+    `force=True` to bypass the cache (the SPA's refresh button does this).
+    Returns: {summary, pnl_dollars, pnl_pct, equity, top_contributors,
+              top_detractors, sources, grounded, generated_at}.
+    """
+    ctx = _portfolio_context_lines()
+    acct = ctx["acct"]
+    pnl_d = float(acct.get("todays_pl") or 0)
+    pnl_p = float(acct.get("todays_pl_pct") or 0)
+    equity = float(acct.get("equity") or 0)
+
+    if not acct.get("connected"):
+        return {
+            "summary": "Alpaca not connected — can't read today's account state.",
+            "pnl_dollars": 0, "pnl_pct": 0, "equity": 0,
+            "top_contributors": [], "top_detractors": [],
+            "sources": [], "grounded": False, "generated_at": time.time(),
+        }
+
+    # Cache key: today's date + symbols set + pnl bucket (avoids re-running for
+    # a $5 move). Bucketing to $100 buckets is plenty for caching purposes.
+    today = datetime.now().strftime("%Y-%m-%d")
+    syms = ",".join(sorted(p["symbol"] for p in ctx["positions"]))
+    bucket = int(pnl_d // 100)
+    key = f"{today}|{syms}|{bucket}"
+    now = time.time()
+    if (not force
+        and _portfolio_insight_cache.get("key") == key
+        and now - _portfolio_insight_cache.get("at", 0) < _PORTFOLIO_INSIGHT_TTL_SEC):
+        return _portfolio_insight_cache["result"]
+
+    direction = "UP" if pnl_d >= 0 else "DOWN"
+    prompt = f"""### Instruction: You are a hedge-fund market analyst.
+The user wants a concise explanation of why their paper-trading account is {direction} today.
+Use ONLY the context below. Cite SPECIFIC tickers and dollar amounts. 3-5 sentences,
+no preamble, no disclaimers, no generic market commentary.
+
+=== TODAY'S ACCOUNT SNAPSHOT ===
+Equity: ${equity:,.2f}
+Today's P&L: {'+' if pnl_d >= 0 else ''}${pnl_d:,.2f} ({pnl_p:+.2f}%)
+Cash: ${float(acct.get('cash') or 0):,.2f}  Buying power: ${float(acct.get('buying_power') or 0):,.0f}
+
+{ctx['pos_block']}
+
+RECENT NEWS (last 24h, for held tickers):
+{ctx['news_block']}
+
+LIVE AGENT ACTIVITY (last 24h):
+{ctx['trigger_block']}
+=== END CONTEXT ===
+
+### Concise explanation (3-5 sentences) of why the account is {direction} today:"""
+
+    try:
+        answer = (analyst.analyze(prompt) or "").strip()
+        # Strip any leaked scaffolding markers.
+        answer = re.sub(r'<think>.*?</think>', '', answer, flags=re.DOTALL).strip()
+        for marker in ("### Instruction", "### Concise", "=== END", "=== TODAY"):
+            if marker in answer:
+                answer = answer.split(marker)[0].strip()
+        if not answer:
+            answer = ("AI didn't return a grounded explanation. Check that there's "
+                      "current position + news data available.")
+        grounded = bool(ctx["positions"])
+    except Exception as e:
+        logger.log(f"⚠️ build_portfolio_insight inference failed: {e}", level="ERROR")
+        answer = f"AI engine error: {e}"
+        grounded = False
+
+    result = {
+        "summary":     answer,
+        "pnl_dollars": pnl_d,
+        "pnl_pct":     pnl_p,
+        "equity":      equity,
+        "top_contributors": [{
+            "ticker": p["symbol"], "intraday_pl": p.get("unrealized_intraday_pl", 0),
+            "change_pct": p.get("change_today", 0) * 100,
+            "market_value": p.get("market_value", 0),
+        } for p in ctx["contributors"][:3]],
+        "top_detractors": [{
+            "ticker": p["symbol"], "intraday_pl": p.get("unrealized_intraday_pl", 0),
+            "change_pct": p.get("change_today", 0) * 100,
+            "market_value": p.get("market_value", 0),
+        } for p in ctx["detractors"][:3]],
+        "sources":      ctx["sources"],
+        "grounded":     grounded,
+        "generated_at": time.time(),
+    }
+    _portfolio_insight_cache.update(key=key, at=now, result=result)
+    return result
+
+
+def ask_portfolio_question(question: str) -> dict:
+    """Free-form Q&A about the user's whole portfolio (not a single ticker).
+
+    Grounds the AI with the same context as the auto-insight: positions,
+    today's per-position P&L, fresh news for held tickers, agent activity.
+    Mirrors `ask_about_ticker`'s contract: {question, answer, sources, grounded}.
+    """
+    question = (question or "").strip()
+    if not question:
+        return {"question": "", "answer": "Please enter a question.",
+                "sources": [], "grounded": False}
+
+    ctx = _portfolio_context_lines()
+    acct = ctx["acct"]
+    pnl_d = float(acct.get("todays_pl") or 0)
+    pnl_p = float(acct.get("todays_pl_pct") or 0)
+    equity = float(acct.get("equity") or 0)
+
+    prompt = f"""### Instruction: You are a hedge-fund market analyst answering a user's question about their paper-trading account.
+Use ONLY the context below. Cite SPECIFIC tickers, dollar amounts, and dates from the context. If the context doesn't contain the answer, say so plainly — do NOT invent specifics. 3-6 sentences. No preamble, no disclaimers.
+
+=== USER'S ACCOUNT (live) ===
+Equity: ${equity:,.2f}
+Today's P&L: {'+' if pnl_d >= 0 else ''}${pnl_d:,.2f} ({pnl_p:+.2f}%)
+Cash: ${float(acct.get('cash') or 0):,.2f}
+
+{ctx['pos_block']}
+
+RECENT NEWS (last 24h, for held tickers):
+{ctx['news_block']}
+
+LIVE AGENT ACTIVITY (last 24h):
+{ctx['trigger_block']}
+=== END CONTEXT ===
+
+### User's question: {question}
+
+### Answer (grounded in the context above, specific to the user's account):"""
+
+    try:
+        answer = (analyst.analyze(prompt) or "").strip()
+        answer = re.sub(r'<think>.*?</think>', '', answer, flags=re.DOTALL).strip()
+        for marker in ("### Answer", "### Question", "=== END", "### Instruction"):
+            if marker in answer:
+                answer = answer.split(marker)[0].strip()
+        if not answer:
+            answer = ("I couldn't generate a grounded answer from the available "
+                      "account data. Try a more specific question, or refresh after "
+                      "the next research cycle / market open.")
+        grounded = bool(ctx["positions"])
+    except Exception as e:
+        logger.log(f"⚠️ ask_portfolio_question inference failed: {e}", level="ERROR")
+        answer = f"AI engine error: {e}"
+        grounded = False
+
+    return {
+        "question": question,
+        "answer":   answer,
+        "sources":  ctx["sources"],
+        "grounded": grounded,
+    }
+
+
 def analyze_single_ticker_data(ticker, pre_fetched_data=None, pre_fetched_funds=None, pre_fetched_history=None):
     """
     Deep analysis for one ticker using Ensemble (Consensus) or Single mode.

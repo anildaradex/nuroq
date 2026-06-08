@@ -824,6 +824,58 @@ def ask(req: AskReq):
     )
 
 
+class PortfolioContribution(BaseModel):
+    ticker: str
+    intraday_pl: float
+    change_pct: float
+    market_value: float
+
+
+class InsightResp(BaseModel):
+    """Auto-generated 'why is the account up/down today' insight."""
+    summary: str
+    pnl_dollars: float
+    pnl_pct: float
+    equity: float
+    top_contributors: list[PortfolioContribution]
+    top_detractors: list[PortfolioContribution]
+    sources: list
+    grounded: bool
+    generated_at: float
+
+
+@app.get("/api/insight/today", response_model=InsightResp)
+def insight_today(force: bool = False):
+    """AI-generated explanation of why the account is up or down today,
+    plus structured top-contributors / top-detractors. Cached for 5 min keyed
+    by date + positions + P&L bucket; pass `?force=true` to bypass the cache.
+    """
+    r = dash.build_portfolio_insight(force=force)
+    return InsightResp(**r)
+
+
+class PortfolioAskReq(BaseModel):
+    question: str
+
+
+class PortfolioAskResp(BaseModel):
+    question: str
+    answer: str
+    sources: list
+    grounded: bool
+
+
+@app.post("/api/ask-portfolio", response_model=PortfolioAskResp)
+def ask_portfolio(req: PortfolioAskReq):
+    """Free-form Q&A grounded with the user's positions, today's per-position
+    P&L, fresh news on held tickers, and recent agent activity. Sibling of
+    /api/ask which is ticker-specific."""
+    if not req.question.strip():
+        raise HTTPException(400, "question required")
+    r = dash.ask_portfolio_question(req.question)
+    return PortfolioAskResp(**r)
+
+
 class ProtectReq(BaseModel):
     ticker: str
     shares: Optional[int] = None   # default: full position qty from Alpaca

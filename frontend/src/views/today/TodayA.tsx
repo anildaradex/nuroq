@@ -2,12 +2,13 @@
 // then positions, watching, compact feed. Reads like a retail brokerage app.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
 import { Line, LineChart, ResponsiveContainer, YAxis } from "recharts";
 import {
   Play, FlaskConical, Zap, ScanSearch, RefreshCw,
-  AlertCircle, ChevronRight, Newspaper,
+  AlertCircle, ChevronRight, Newspaper, Sparkles, SendHorizonal, Loader2,
 } from "lucide-react";
-import { api, type ResearchStatus } from "../../lib/api";
+import { api, type ResearchStatus, type Insight, type PortfolioAsk } from "../../lib/api";
 import { cn, fmtUSD, fmtPct, shortTime } from "../../lib/cn";
 import { haptic } from "../../lib/native";
 import type { VariantProps } from "./shared";
@@ -77,6 +78,9 @@ export function TodayA({ acct, history, cards, nextActions, feed, orders, portfo
           </div>
         )}
       </div>
+
+      {/* ─── AI insight + portfolio Q&A ───────────────────────────── */}
+      <InsightBox />
 
       {/* ─── Research-cycle status banner ───────────────────────────
           Surfaces immediate feedback after the user clicks Run Research:
@@ -208,6 +212,165 @@ export function TodayA({ acct, history, cards, nextActions, feed, orders, portfo
             <FeedRowCompact key={i} e={e} />
           ))
         )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Auto-generated "why is the account up/down today" insight, plus a
+ * follow-up Q&A box that lets the user ask anything about their portfolio.
+ *
+ * The insight runs once on mount (server-side cached 5 min), refreshable
+ * with the ↻ button. Asking a question is a one-shot mutation — the last
+ * 3 Q&As are kept in component state, newest first.
+ */
+function InsightBox() {
+  const insight = useQuery<Insight>({
+    queryKey: ["insight-today"],
+    queryFn: () => api.insightToday(false),
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
+  });
+  const refresh = useMutation({
+    mutationFn: () => api.insightToday(true),
+    onSuccess: (r) => { insight.refetch(); void r; },
+  });
+  const [q, setQ] = useState("");
+  const [thread, setThread] = useState<PortfolioAsk[]>([]);
+  const ask = useMutation({
+    mutationFn: (question: string) => api.askPortfolio(question),
+    onSuccess: (r) => {
+      haptic.success();
+      setThread((t) => [r, ...t].slice(0, 3));
+      setQ("");
+    },
+    onError: () => haptic.error(),
+  });
+
+  const onAsk = (e: React.FormEvent) => {
+    e.preventDefault();
+    const text = q.trim();
+    if (!text || ask.isPending) return;
+    ask.mutate(text);
+  };
+
+  const i = insight.data;
+  const direction = i ? (i.pnl_dollars >= 0 ? "up" : "down") : "";
+
+  return (
+    <div className="card p-4 space-y-3">
+      {/* Header */}
+      <div className="flex items-center gap-2">
+        <Sparkles className="w-4 h-4 text-accent shrink-0" />
+        <div className="text-sm font-semibold">
+          {i ? (
+            <>
+              Why your account is{" "}
+              <span className={i.pnl_dollars >= 0 ? "text-buy" : "text-sell"}>
+                {direction}
+              </span>{" "}
+              today
+            </>
+          ) : (
+            "Today's insight"
+          )}
+        </div>
+        <div className="flex-1" />
+        <button
+          onClick={() => { haptic.tap(); refresh.mutate(); }}
+          disabled={refresh.isPending || insight.isFetching}
+          className="btn btn-ghost !px-2 !py-1"
+          title="Refresh insight"
+        >
+          <RefreshCw className={cn("w-3 h-3", (refresh.isPending || insight.isFetching) && "animate-spin")} />
+        </button>
+      </div>
+
+      {/* Summary paragraph */}
+      {insight.isPending ? (
+        <div className="h-12 animate-pulse bg-zinc-100 dark:bg-zinc-900 rounded" />
+      ) : i ? (
+        <p className="text-xs leading-relaxed opacity-90">{i.summary}</p>
+      ) : (
+        <p className="text-xs text-sell">Couldn't generate insight.</p>
+      )}
+
+      {/* Top movers (compact 2-up) */}
+      {i && (i.top_contributors.length > 0 || i.top_detractors.length > 0) && (
+        <div className="grid grid-cols-2 gap-3 pt-1">
+          <MoversCol label="Top contributors" rows={i.top_contributors} tone="buy" />
+          <MoversCol label="Top detractors"   rows={i.top_detractors}   tone="sell" />
+        </div>
+      )}
+
+      {/* Sources line */}
+      {i && i.sources.length > 0 && (
+        <div className="text-xxs opacity-50 font-mono">
+          grounded in: {i.sources.join(" · ")}
+          {i.generated_at ? ` · ${new Date(i.generated_at * 1000).toLocaleTimeString()}` : ""}
+        </div>
+      )}
+
+      {/* Q&A thread (newest first, last 3) */}
+      {thread.length > 0 && (
+        <div className="space-y-2 pt-2 border-t border-zinc-200 dark:border-zinc-800">
+          {thread.map((qa, idx) => (
+            <div key={idx} className="text-xs space-y-1">
+              <div className="font-semibold opacity-70 flex items-start gap-1.5">
+                <span className="opacity-60">Q:</span>
+                <span>{qa.question}</span>
+              </div>
+              <div className="opacity-90 leading-relaxed pl-4">{qa.answer}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Ask input */}
+      <form onSubmit={onAsk} className="flex items-center gap-2 pt-1">
+        <input
+          type="text"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Ask anything — e.g. 'Why is META down?' or 'Which name is dragging me?'"
+          className="input text-xs"
+          disabled={ask.isPending}
+        />
+        <button
+          type="submit"
+          disabled={ask.isPending || !q.trim()}
+          className="btn btn-primary !px-3"
+        >
+          {ask.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <SendHorizonal className="w-3.5 h-3.5" />}
+        </button>
+      </form>
+      {ask.isError && (
+        <div className="text-xxs text-sell">Couldn't reach the AI. Try again.</div>
+      )}
+    </div>
+  );
+}
+
+function MoversCol({
+  label, rows, tone,
+}: { label: string; rows: Insight["top_contributors"]; tone: "buy" | "sell" }) {
+  if (rows.length === 0) return null;
+  return (
+    <div className="space-y-1">
+      <div className="text-xxs uppercase opacity-50">{label}</div>
+      <div className="space-y-0.5">
+        {rows.map((r) => (
+          <div key={r.ticker} className="flex items-center gap-2 text-xxs font-mono">
+            <span className="font-bold w-12">{r.ticker}</span>
+            <span className={tone === "buy" ? "text-buy" : "text-sell"}>
+              {r.intraday_pl >= 0 ? "+" : ""}{fmtUSD(r.intraday_pl)}
+            </span>
+            <span className="opacity-50">
+              ({r.change_pct >= 0 ? "+" : ""}{r.change_pct.toFixed(2)}%)
+            </span>
+          </div>
+        ))}
       </div>
     </div>
   );
