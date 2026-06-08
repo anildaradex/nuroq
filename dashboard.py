@@ -825,6 +825,43 @@ class PortfolioManager:
         except Exception as e:
             logger.log(f"⚠️ SL/TP backfill failed: {e}", level="WARNING")
 
+        # 4. SYNC QTY + AVG_PRICE drift on positions present in both. Alpaca is
+        #    the source of truth: out-of-band Alpaca activity (partial fills,
+        #    manual sells, bracket triggers, fractional rounding) makes the
+        #    local cache go stale. Without this step the reconcile only handled
+        #    set membership, so qty/avg could drift indefinitely. The NVDA +
+        #    SAN drift on 2026-06-07 came from exactly this gap.
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                rows = conn.execute(
+                    "SELECT ticker, shares, avg_price FROM portfolio"
+                ).fetchall()
+            for tkr, cur_qty, cur_avg in rows:
+                sym = tkr.upper()
+                p = live_by_sym.get(sym)
+                if not p:
+                    continue   # phantom — already removed in step 1
+                live_qty = float(p["qty"])
+                live_avg = float(p["avg_entry_price"])
+                # Tolerances bigger than SQLite float-precision noise but small
+                # enough to catch any real partial fill (down to a 1-cent avg
+                # or a fractional-share delta).
+                if (abs(live_qty - float(cur_qty or 0)) > 1e-4
+                    or abs(live_avg - float(cur_avg or 0)) > 1e-4):
+                    with sqlite3.connect(self.db_path) as conn:
+                        conn.execute(
+                            "UPDATE portfolio SET shares=?, avg_price=? WHERE ticker=?",
+                            (live_qty, live_avg, sym),
+                        )
+                    logger.log(
+                        f"📐 Reconcile: synced {sym} qty/avg to Alpaca — "
+                        f"qty {float(cur_qty or 0):g} → {live_qty:g}, "
+                        f"avg ${float(cur_avg or 0):.4f} → ${live_avg:.4f}.",
+                        level="INFO",
+                    )
+        except Exception as e:
+            logger.log(f"⚠️ Qty/avg sync failed: {e}", level="WARNING")
+
     def refresh_prices(self):
         df = self.get_portfolio()
         if df.empty:

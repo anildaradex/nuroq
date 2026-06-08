@@ -197,6 +197,51 @@ class TestExecutionPortfolio(unittest.TestCase):
         finally:
             os.remove(test_db)
 
+    def test_reconcile_syncs_qty_and_avg_drift(self):
+        """If Alpaca shows different qty/avg for a position the local DB also holds,
+        _reconcile_with_alpaca must update the local row to match Alpaca's truth.
+
+        Regression for the 2026-06-07 NVDA/SAN bug: the prior reconcile only did
+        set-membership (add/remove tickers) and ignored qty/avg drift, so partial
+        fills, manual sells, and bracket triggers silently broke the local cache.
+        """
+        import tempfile, sqlite3 as sql
+        import dashboard
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+            test_db = tmp.name
+        try:
+            pm = PortfolioManager(db_path=test_db)
+            # Local thinks NVDA = 60 @ 215.33 (the stale state we hit in prod).
+            pm.add_position("NVDA", 60, 215.33, sl=200, tp=250, score=68, rating="BUY")
+            # SAN drift in the other direction (1814 → 2814).
+            pm.add_position("SAN", 1814, 12.48, sl=11.92, tp=13.6, score=68, rating="BUY")
+            # An untouched position (qty/avg match) to prove we don't churn.
+            pm.add_position("AAPL", 17, 302.33, sl=290, tp=325, score=70, rating="BUY")
+
+            # Alpaca's "truth": NVDA shrunk, SAN grew, AAPL unchanged.
+            live = [
+                {"symbol": "NVDA", "qty": 4.745113851, "avg_entry_price": 210.743099},
+                {"symbol": "SAN",  "qty": 2814.0,      "avg_entry_price": 12.3572},
+                {"symbol": "AAPL", "qty": 17.0,        "avg_entry_price": 302.33},
+            ]
+            with patch.object(dashboard.alpaca_api, "list_positions", return_value=live), \
+                 patch.object(dashboard.alpaca_api, "get_bracket_levels", return_value={}):
+                pm._reconcile_with_alpaca()
+
+            with sql.connect(test_db) as conn:
+                rows = {r[0]: (r[1], r[2]) for r in conn.execute(
+                    "SELECT ticker, shares, avg_price FROM portfolio").fetchall()}
+
+            self.assertAlmostEqual(rows["NVDA"][0], 4.745113851, places=6)
+            self.assertAlmostEqual(rows["NVDA"][1], 210.743099, places=4)
+            self.assertAlmostEqual(rows["SAN"][0],  2814.0,     places=4)
+            self.assertAlmostEqual(rows["SAN"][1],  12.3572,    places=4)
+            # AAPL row was already in sync — must remain untouched (and identical).
+            self.assertAlmostEqual(rows["AAPL"][0], 17.0,       places=4)
+            self.assertAlmostEqual(rows["AAPL"][1], 302.33,     places=4)
+        finally:
+            os.remove(test_db)
+
 class TestAlpacaExecution(unittest.TestCase):
     @patch('alpaca_executor.TradingClient')
     def test_alpaca_live_trade_success(self, mock_client_class):
