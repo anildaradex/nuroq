@@ -1343,11 +1343,18 @@ def run_research_cycle(top_n: int = 150) -> str:
         )
 
         # Pre-fetch fundamentals + history in batches (already cached helpers).
+        # We need an asyncio loop because the batch helpers are async; the worker
+        # thread has none by default. CLOSE the loop in finally so we don't leak
+        # file descriptors / scheduler state per cycle.
         tickers = [p['T'] for p in top_picks]
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        batch_funds = loop.run_until_complete(get_fundamentals_batch_async(tickers, logger))
-        batch_history = loop.run_until_complete(get_history_batch_async(tickers, logger, skip_stale=True))
+        try:
+            batch_funds = loop.run_until_complete(get_fundamentals_batch_async(tickers, logger))
+            batch_history = loop.run_until_complete(get_history_batch_async(tickers, logger, skip_stale=True))
+        finally:
+            loop.close()
+            asyncio.set_event_loop(None)
 
         # Collect each analysis result so we can write a ranked watchlist at the end.
         analysis_results = []

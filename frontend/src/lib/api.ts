@@ -279,6 +279,18 @@ async function post<T>(url: string, body?: unknown): Promise<T> {
   return r.json();
 }
 
+export interface ResearchStatus {
+  active: boolean;
+  progress: number;
+  total: number;
+  percent: number;
+  elapsed_sec: number;
+  eta_sec: number | null;
+  started_at: number | null;
+  last_completed_at: number | null;   // unix ts of most recent finished cycle
+  last_count: number;                  // # candidates in current watchlist
+}
+
 export interface AuthStatus {
   authenticated: boolean;
   must_change_password: boolean;
@@ -326,6 +338,7 @@ export const api = {
   agentStart:     () => post<{ ok: boolean; message: string }>("/api/agent/start"),
   agentStop:      () => post<{ ok: boolean; message: string }>("/api/agent/stop"),
   researchCycle:  () => post<{ ok: boolean; message: string }>("/api/research-cycle"),
+  researchStatus: () => get<ResearchStatus>("/api/research-cycle/status"),
   // Scan is async (long-running): start it, then poll scanStatus until !running.
   scan: (mode: "top20" | "global") =>
     post<{ started: boolean; running: boolean; message: string }>("/api/scan", { mode }),

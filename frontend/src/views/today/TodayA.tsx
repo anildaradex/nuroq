@@ -1,13 +1,13 @@
 // Variant A — "Robinhood / Schwab" — Hero P&L, sparkline, pinned action row,
 // then positions, watching, compact feed. Reads like a retail brokerage app.
 
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Line, LineChart, ResponsiveContainer, YAxis } from "recharts";
 import {
   Play, FlaskConical, Zap, ScanSearch, RefreshCw,
   AlertCircle, ChevronRight, Newspaper,
 } from "lucide-react";
-import { api } from "../../lib/api";
+import { api, type ResearchStatus } from "../../lib/api";
 import { cn, fmtUSD, fmtPct, shortTime } from "../../lib/cn";
 import { haptic } from "../../lib/native";
 import type { VariantProps } from "./shared";
@@ -15,7 +15,28 @@ import type { VariantProps } from "./shared";
 export function TodayA({ acct, history, cards, nextActions, feed, orders, portfolio }: VariantProps) {
   const qc = useQueryClient();
   const startAgent  = useMutation({ mutationFn: api.agentStart,    onSuccess: () => { haptic.success(); qc.invalidateQueries(); } });
-  const research    = useMutation({ mutationFn: api.researchCycle, onSuccess: () => qc.invalidateQueries() });
+
+  // Research cycle: poll status so the tile + banner can show live progress.
+  // Fast poll (3s) only when active; slow (60s) when idle. This is how the
+  // user gets "yes it actually started" feedback — the tile transitions to
+  // a running state within one tick of clicking.
+  const researchSt = useQuery<ResearchStatus>({
+    queryKey: ["research-status"], queryFn: api.researchStatus,
+    refetchInterval: (q) => (q.state.data?.active ? 3_000 : 60_000),
+    staleTime: 2_000,
+  });
+  const research = useMutation({
+    mutationFn: api.researchCycle,
+    onSuccess: () => {
+      haptic.success();
+      // Force an IMMEDIATE status refetch so the tile flips to "Running" within
+      // the network roundtrip, not on the next 60s tick.
+      qc.invalidateQueries({ queryKey: ["research-status"] });
+    },
+    onError: () => haptic.error(),
+  });
+
+  const rs = researchSt.data;
   const agentRunning = cards?.agent.running ?? false;
 
   if (!acct) return <Skeleton />;
@@ -57,6 +78,20 @@ export function TodayA({ acct, history, cards, nextActions, feed, orders, portfo
         )}
       </div>
 
+      {/* ─── Research-cycle status banner ───────────────────────────
+          Surfaces immediate feedback after the user clicks Run Research:
+          (a) the backend's success message while the mutation just settled,
+          then (b) live progress while the cycle is running. Replaces the
+          previous "click → silence" UX. */}
+      {(rs?.active || research.isSuccess || research.isError) && (
+        <ResearchBanner
+          status={rs}
+          justStartedMessage={research.isSuccess ? research.data?.message : undefined}
+          errorMessage={research.isError ? "Failed to start — check Logs." : undefined}
+          onDismissJustStarted={() => research.reset()}
+        />
+      )}
+
       {/* ─── Pinned action row ─────────────────────────────────────── */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
         <ActionTile
@@ -67,8 +102,15 @@ export function TodayA({ acct, history, cards, nextActions, feed, orders, portfo
           onClick={() => { haptic.medium(); startAgent.mutate(); }}
         />
         <ActionTile
-          icon={FlaskConical} label="Run Research"
-          loading={research.isPending}
+          icon={FlaskConical}
+          label={
+            rs?.active
+              ? `Research ${rs.progress}/${rs.total || "…"} · ${Math.floor(rs.elapsed_sec / 60)}m`
+              : research.isPending ? "Starting…" : "Run Research"
+          }
+          tone={rs?.active ? "ok" : undefined}
+          loading={research.isPending || rs?.active}
+          disabled={rs?.active}
           onClick={() => { haptic.medium(); research.mutate(); }}
         />
         <ActionTile
@@ -233,6 +275,73 @@ function FeedRowCompact({ e }: { e: VariantProps["feed"] extends (infer R)[] | u
       <span className="opacity-80 truncate flex-1">{desc}</span>
     </div>
   );
+}
+
+function ResearchBanner({
+  status, justStartedMessage, errorMessage, onDismissJustStarted,
+}: {
+  status: ResearchStatus | undefined;
+  justStartedMessage?: string;
+  errorMessage?: string;
+  onDismissJustStarted: () => void;
+}) {
+  // Error wins (fastest signal something's wrong).
+  if (errorMessage) {
+    return (
+      <div className="card card-tight border-sell/40 bg-sell/5 flex items-start gap-2 text-xs">
+        <AlertCircle className="w-3.5 h-3.5 text-sell shrink-0 mt-0.5" />
+        <div className="opacity-90">{errorMessage}</div>
+      </div>
+    );
+  }
+
+  // Cycle running: show live progress prominently. Buyers also see this if
+  // someone else (or the cron) started a cycle — it's the canonical UI signal.
+  if (status?.active) {
+    const pct = status.percent || 0;
+    const elapsed = `${Math.floor(status.elapsed_sec / 60)}m ${status.elapsed_sec % 60}s`;
+    const eta = status.eta_sec != null
+      ? `~${Math.max(1, Math.ceil(status.eta_sec / 60))}m left`
+      : "warming up";
+    return (
+      <div className="card card-tight border-accent/40 bg-accent/5 space-y-2 text-xs">
+        <div className="flex items-center gap-2">
+          <FlaskConical className="w-3.5 h-3.5 text-accent shrink-0" />
+          <span className="font-semibold">Research cycle running</span>
+          <span className="opacity-70 font-mono">
+            {status.progress}/{status.total || "…"} · {elapsed} · {eta}
+          </span>
+        </div>
+        {/* Animated progress bar — gives a moving signal even when progress is
+            stuck at 0 (the pre-fetch phase, before per-ticker work starts). */}
+        <div className="h-1.5 rounded-full bg-zinc-200 dark:bg-zinc-800 overflow-hidden">
+          <div
+            className="h-full bg-accent transition-[width] duration-700"
+            style={{ width: `${pct || 4}%` }}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  // Mutation just succeeded but status hasn't ticked back yet (the 1-second
+  // gap between POST returning and the next status poll). Show the backend's
+  // start message so the user gets immediate confirmation. Auto-dismisses when
+  // the status query catches up (the parent removes us once `active: true`).
+  if (justStartedMessage) {
+    return (
+      <div className="card card-tight border-accent/40 bg-accent/5 flex items-start gap-2 text-xs">
+        <FlaskConical className="w-3.5 h-3.5 text-accent shrink-0 mt-0.5 animate-pulse" />
+        <div className="flex-1 opacity-90">{justStartedMessage}</div>
+        <button
+          onClick={onDismissJustStarted}
+          className="text-xxs opacity-50 hover:opacity-100"
+        >dismiss</button>
+      </div>
+    );
+  }
+
+  return null;
 }
 
 function Skeleton() {

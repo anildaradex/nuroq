@@ -609,6 +609,58 @@ def research_cycle():
     return MutationResp(ok=True, message=msg)
 
 
+class ResearchStatusResp(BaseModel):
+    active: bool
+    progress: int           # tickers analyzed so far
+    total: int              # tickers in scope (0 until the first thread tick)
+    percent: float          # 0..100, rounded to one decimal
+    elapsed_sec: int        # 0 when idle
+    eta_sec: Optional[int]  # extrapolated; None when idle or progress is 0
+    started_at: Optional[float]
+    last_completed_at: Optional[float]   # unix ts of most recent finished cycle
+    last_count: int                       # # candidates in current watchlist
+
+
+@app.get("/api/research-cycle/status", response_model=ResearchStatusResp)
+def research_cycle_status():
+    """Live progress of an in-flight research cycle, plus a "last completed"
+    marker from `watchlist_today` so the UI can show staleness even when no
+    cycle is running. Cheap (no Alpaca calls), safe to poll every few seconds.
+    """
+    st = dash._research_in_progress
+    active = bool(st.get("active"))
+    progress = int(st.get("progress") or 0)
+    total = int(st.get("total") or 0)
+    percent = (progress / total * 100) if total else 0.0
+    started = st.get("started_at")
+    started_ts: Optional[float] = None
+    elapsed = 0
+    eta: Optional[int] = None
+    if active and started is not None:
+        # `started_at` is a datetime in the dashboard's internal state.
+        try:
+            started_ts = started.timestamp()
+        except Exception:
+            started_ts = None
+        if started_ts is not None:
+            elapsed = max(0, int(time.time() - started_ts))
+            if progress > 0 and total > 0:
+                eta = int(elapsed * (total - progress) / progress)
+
+    meta = dash.watchlist_today.get_metadata() or {}
+    return ResearchStatusResp(
+        active=active,
+        progress=progress,
+        total=total,
+        percent=round(percent, 1),
+        elapsed_sec=elapsed,
+        eta_sec=eta,
+        started_at=started_ts,
+        last_completed_at=(meta.get("generated_at") or None),
+        last_count=int(meta.get("count") or 0),
+    )
+
+
 class ScanReq(BaseModel):
     mode: str  # "top20" | "global"
 

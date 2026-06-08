@@ -31,7 +31,12 @@ export function CommandPalette({ open, onClose, onNavigate, onAnalyze }: Props) 
   });
   const runResearch = useMutation({
     mutationFn: api.researchCycle,
-    onSettled: () => qc.invalidateQueries(),
+    onSettled: () => {
+      // Bump the research-status query so TodayA's running banner appears
+      // immediately on the next render, not on the next 60s tick.
+      qc.invalidateQueries({ queryKey: ["research-status"] });
+      qc.invalidateQueries();
+    },
   });
 
   useEffect(() => {
