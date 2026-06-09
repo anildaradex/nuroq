@@ -1,20 +1,55 @@
 # NuroQ — Session Handoff
 
-> **For the next session.** Read this first, then `session.md` (Session 6) for the play-by-play.
+> **For the next session.** Read this first, then `session.md` (Session 7) for the play-by-play.
 >
-> **Date:** 2026-06-06 (end of session 6)
-> **Branch:** `main` (== `feat/algo-claude-improvements`; PR #7 merged). Default branch is `main`; work can continue on either, deploys trigger on push to `main`.
+> **Date:** 2026-06-08 (end of Session 7)
+> **Branch:** `main` == `feat/algo-claude-improvements` @ `ffba79b`. Default branch is `main`; work can continue on either, **deploys trigger on push to `main`**.
 >
-> ## 🚀 NuroQ is LIVE in the cloud
-> - **URL:** **https://nuroq.nuroquant.com** (HTTPS via a named Cloudflare tunnel). Open `…/?api_key=<KEY>` once to set the auth cookie, then the bare URL works on any device.
-> - **API key:** `gcloud secrets versions access latest --secret=NUROQ_API_KEY --project=nuroq-prod-anildara` (sent as `X-NuroQ-Key` header or `?api_key=`).
-> - **Infra:** GCP project `nuroq-prod-anildara`; GCE **e2-medium** VM `nuroq-backend` @ static IP **34.9.20.141** (us-central1-a, **80GB** boot disk). Container = React UI + FastAPI + live agent + cloudflared, all in one image (`deploy/Dockerfile.cloud`, multi-stage, CPU-only torch). **Gemini via Vertex AI** (VM service account, no key). Secrets in Secret Manager; SQLite + tunnel log on host-path `/var/lib/nuroq` → `/data`. Scheduler (research 03:30 ET / proposals 08:00 ET) + live agent autostart. **Paper trading only.**
-> - **Deploy:** auto on push to `main` (GitHub Actions + **Workload Identity Federation**, no stored key — `.github/workflows/deploy.yml`). Manual: `PROJECT_ID=nuroq-prod-anildara ./deploy/deploy_gce.sh` (idempotent; reads CLOUDFLARED_TOKEN from Secret Manager). Direct static-IP access (`http://34.9.20.141:8000`) is owner-IP-firewalled.
-> - **Tests:** `./.venv/bin/python master_test_suite.py` → **110/110**.
+> ## 🚀 LIVE — three URLs, all paper-trading
+> - **`https://nuroq.nuroquant.com`** — GCE VM (Gemini · Vertex AI). Always on. Production.
+> - **`https://test.nuroquant.com`** — your Mac via Cloudflare Tunnel (Gemma · MLX). Only up when the Mac is on.
+> - **`http://localhost:8000`** — your Mac, direct.
 >
-> **Top open items:** confirm the merge-to-main auto-deploy went green · Today "Design lab" cleanup (4 layout variants → pick 1) · boot-disk snapshots for backup · iOS re-point to the new URL. Live trading still OFF.
+> **Login:** password seed is `"nuroq"` on first run (per box). UI prompts to change on first login. **API-key auth is GONE** (replaced with session-cookie password login in Session 7). Open the URL, sign in once — 30-day cookie. No `?api_key=` needed anymore.
 >
-> **Deploy gotchas already solved (don't re-hit):** named-tunnel route service must be **http**://localhost:8000 (not https → 502); CPU torch keeps the image ~1.5GB (CUDA torch filled the disk); `update-container` reassigns ephemeral IPs so a **static IP** is attached; the credential-helper token lacks `workflow` scope so **API merges strip `.github/workflows/`** — merge via `git` or verify after.
+> ## NEW THIS SESSION — autonomous day-trading + Configuration tab
+> NuroQ now has a left-nav **"Configuration"** view that exposes every autonomous-trading knob:
+> - **Capital & risk**: budget ($10k default), risk per trade (1%), daily loss limit (2%), max concurrent (5)
+> - **Day-trading schedule (ET)**: entry window (09:35–15:00), EOD flatten (15:50)
+> - **Policy**: margin allowed (OFF), Telegram notify on every trade (ON)
+> - **Tax mode (§475(f))**: separates deploy env var from user-acknowledged election; red banner when they mismatch
+> - **Big actions**: Auto-trade enable toggle · Halt trading · **Clean slate · sell all positions**
+>
+> Architecture: `agent_config.py` (SQLite single-row, persistent), `risk_manager.py` (9-guard gatekeeper, single chokepoint), `eod_flattener.py` (60s daemon: pending-open + regular EOD), `live_agent._try_auto_trade` (autonomy branch — risk manager is sole authority in AUTO mode). **Auto-trade is OFF by default** — explicit opt-in via Configuration.
+>
+> ## Infra (unchanged from Session 6)
+> - GCP project `nuroq-prod-anildara`; GCE **e2-medium** VM `nuroq-backend` @ static IP **34.9.20.141** (us-central1-a, **80GB** boot disk). Container = React UI + FastAPI + live agent + cloudflared, all in one image (`deploy/Dockerfile.cloud`). Gemini via Vertex AI (VM service account, no key). Secrets in Secret Manager; SQLite on host-path `/var/lib/nuroq` → `/data`. Scheduler (research 03:30 ET / proposals 08:00 ET) + live agent autostart. **Paper trading only.**
+> - **Auto-deploys on push to `main`** via GitHub Actions + Workload Identity Federation. Manual: `PROJECT_ID=nuroq-prod-anildara ./deploy/deploy_gce.sh`.
+> - **Mac tunnel:** `~/Library/LaunchAgents/com.nuroq.tunnel.plist` runs `cloudflared` for the `nuroq-mac` tunnel. Installed via `scripts/install-mac-tunnel.sh`.
+> - **Tests:** `./.venv/bin/python master_test_suite.py` → **123/123**.
+>
+> ## ⚡ Monday-morning checklist
+> 1. **Account flatten will fire automatically.** At ~09:30 ET Monday, EOD daemon picks up the queued `pending_open_flatten` flag (set 2026-06-08 22:43 because Alpaca-paper's pending_cancel brackets hold shares off-hours). You should get a Telegram: "🧹 Auto-retry flatten at open: closed N, queued M." Confirm positions go to zero and margin debt clears.
+> 2. If Telegram doesn't fire by ~09:35 ET → manually click **Configuration → Clean slate**. The protective brackets will have fully released by then.
+> 3. **Auto-trade is OFF** — flip Configuration → Auto-trade enabled when you're ready to let it trade. Defaults: $10k budget, 1% risk/trade ($100 SL), 2% daily loss limit ($200 max bleed), max 5 concurrent, margin OFF, entry 09:35–15:00 ET, EOD flatten 15:50 ET.
+>
+> ## Top open items going into Session 8
+> - **Phase 4 of the day-trading plan**: post-mortem trade journal → DPO accumulation → backtest harness. Not yet shipped — MVP gives autonomous paper trading with risk guards; self-improvement is the next meaningful chunk (~25-30 hrs).
+> - **News on local box**: `NewsPoller` is still gated behind `NUROQ_BACKGROUND_SERVICES=1`. Local insights say "no news in last 24h" until that's split the way Telegram send was (Session 7).
+> - **Today "Design lab"** cleanup — 4 variants behind a switcher; pick one, delete others (legacy item from Session 4).
+> - **Persistent Q&A history** — last 3 Q&As are component state, lost on reload. Easy `localStorage` fix.
+> - **InsightBox + vs-SPY pill on Today variants B/C/D** — TodayA only right now.
+> - **Live trading still OFF**: `NUROQ_LIVE_TRADING=0` everywhere. Don't flip until trade journal + slippage model are in.
+>
+> ## Gotchas (don't re-hit, all caught during Session 7)
+> - **Alpaca paper off-hours**: `close_all_positions` returns `service unavailable`; individual closes get `held_for_orders` lockout until next market open. Handled via `pending_open_flatten` flag + EOD daemon auto-retry.
+> - **Alpaca SDK `PositionSide.LONG`**: `str(p.side).lower() == "long"` silently fails (str is `"PositionSide.LONG"`) — buggy code submitted BUYs that would DOUBLE positions. Fix uses `.name`/"LONG" substring. Regression test locks it down.
+> - **Alpaca OPG TimeInForce**: rejects fractional shares. Use DAY for fractional, OPG for whole-share.
+> - **macOS `$HOSTNAME`** auto-set: silently won over script defaults in `install-mac-tunnel.sh`. Use `PUBLIC_HOSTNAME` for any user-facing host variable.
+> - **Telegram polling vs sending**: were coupled; preview/cron with `BG=0` silently dropped notifications. Now sending uses raw HTTPS POST; polling stays gated.
+> - **Gemini `max_output_tokens`**: `analyst.analyze(max_tokens=…)` was being dropped before delegating to `GeminiBackend`. Now plumbed through. Cloud truncation fix.
+> - **`get_portfolio()` vs reconcile**: reconcile compares LOCAL DB to Alpaca for phantom/missing detection. After the Alpaca-first refactor, `get_portfolio()` returns Alpaca truth — so reconcile reads DB directly (`SELECT ticker FROM portfolio`) instead.
+> - **Cloudflare WAF**: 403s default `Python-urllib/x` UA. Set `User-Agent: NuroQ-Compare/2.0` on server-to-server requests.
 
 ---
 

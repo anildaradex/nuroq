@@ -18,7 +18,193 @@
 
 ---
 
-## Current session — 2026-06-07
+## Session 7 — 2026-06-07 → 06-08 (COMPLETE — closes with autonomous-trading MVP + Tax mode)
+
+**Headline:** went from "key-gated web app" to "autonomous day-trading paper
+account with a Configuration tab + risk guards + EOD flatten + tax-aware
+mode warning, AI-explained P&L, benchmark-overlaid equity chart, and login
+that doesn't make you paste a key every day." 18 commits, 110 → 123 tests,
+~1593 line MVP feature lands at the end. Cloud auto-deployed each push.
+
+### What shipped, in shipped order
+
+1. **UI refresh + dollar-green palette + system-UI fonts + light mode default**
+   — WhatsApp-style native fonts, "greenback" palette, theme persistence bug
+   fixed (toggle now actually survives reloads).
+
+2. **Gemma↔Gemini A/B compare panel** — AnalyzeView "Compare with cloud
+   (Gemini)" button overlays both backends' verdicts side-by-side with
+   Δ score + ratings-agree badges. Gated to local Gemma box only (the cloud
+   has no useful peer; comparing Gemini against itself is meaningless). New
+   `GET /api/analyze/peer/{ticker}` does server-to-server auth.
+
+3. **Password login replaces API-key auth.** `backend/auth.py` (PBKDF2 +
+   HMAC-signed session cookies, stdlib only, seeded password "nuroq"). New
+   `LoginScreen` + AuthGate in App.tsx. SPA drops `?api_key=` and
+   `X-NuroQ-Key` for `credentials: "include"`. Peer-compare flipped to
+   `NUROQ_PEER_PASSWORD`.
+
+4. **`test.nuroquant.com` Cloudflare tunnel → Mac** via `scripts/install-mac-tunnel.sh`.
+   `cloudflared tunnel login` (interactive), then the script creates a named
+   tunnel `nuroq-mac`, routes DNS, writes a launchd plist that runs at login.
+   Gotcha: macOS auto-sets `$HOSTNAME` which silently won over the default;
+   variable renamed `PUBLIC_HOSTNAME` to fix. iOS-friendly: phone gets HTTPS
+   to the Mac's local backend with no SSH tunnel.
+
+5. **Portfolio sync bug (NVDA + SAN drift) fixed, then refactored away.**
+   - Local DB said NVDA = 60 shares / SAN = 1814. Alpaca truth: 4.745 / 2814.
+     Root cause: `_reconcile_with_alpaca` only did set-membership (add /
+     remove tickers), never qty/avg drift.
+   - **Hot-fix:** one-shot SQL UPDATE to Alpaca's truth (backed up to
+     `.backups/portfolio-presync-*.json`).
+   - **Step-4 reconcile patch** — compares qty/avg, updates on drift, emits
+     `📐 Reconcile: synced … qty/avg to Alpaca` log line (with regression test).
+   - **Architectural refactor** — `get_portfolio()` rewritten as **Alpaca =
+     source of truth on every read**. Joins live qty/avg/MV/PnL from Alpaca
+     with NuroQ-side SL/TP/AI/entry_date metadata from DB. DB qty/avg
+     columns become a cold-cache fallback for the Alpaca-down case. Drift
+     architecturally impossible from here on.
+
+6. **Account Equity vs Positions Value** — PortfolioView's stat cards used
+   to show summed-MV as "Market Value" → misleading on margin. Now: Account
+   Equity (matches Alpaca's "Total Equity"), Positions Value (gross, with
+   leverage multiplier when on margin), explicit "On margin: positions −
+   borrowed = equity" banner.
+
+7. **Run Research workflow** — backend `_research_in_progress` state was
+   internal-only; UI never knew. Now: `GET /api/research-cycle/status`,
+   live banner ("Research cycle running · 25/150 · 2m 8s · ~11m left" +
+   animated progress bar), action tile transitions to "Research X/Y · Zm"
+   + disabled while active. Fixed asyncio loop leak in worker thread.
+
+8. **Telegram send/poll decoupled.** `TradeGatekeeper.send_notification`
+   required `self.app + self.loop` (set only when polling started); preview
+   server / cron with `NUROQ_BACKGROUND_SERVICES=0` silently dropped every
+   notification with a "Gatekeeper not started" warning. Rewrote to use
+   raw `https://api.telegram.org/bot…/sendMessage` POST in a daemon thread.
+   Sending now works regardless of polling state; polling-conflict gate
+   still protects `getUpdates`.
+
+9. **Insight + Q&A AI feature on TodayA hero card.** Auto-generated 3-5
+   sentence "why is your account up/down today" paragraph, cited
+   contributors/detractors, free-form Q&A input below. New endpoints:
+   `GET /api/insight/today` + `POST /api/ask-portfolio`. Server-side cache
+   5 min keyed by date + position set + P&L bucket; refresh button bypasses.
+
+10. **Market context for insights** — added SPY/QQQ/DIA/IWM/^VIX live
+    benchmarks (yfinance, 60s cache). Prompt now disambiguates scope: "if
+    asked about 'the market' → MARKET TODAY section; if about specific
+    holdings → USER'S ACCOUNT section". Pre-computes vs-SPY delta so Gemma
+    stops calling underperformance "outperforming the market".
+
+11. **Ticker glossary (~70 entries)** — static map: ETFs/indices,
+    confusion-prone single-letters (V=Visa, MA=Mastercard, F=Ford, T=AT&T,
+    VZ=Verizon, etc.), Mag-7, semis, financials, healthcare, ADRs (SAN=
+    Banco Santander, SONY, BABA, NIO). Spliced into both prompts as
+    `=== TICKER GLOSSARY ===` with "do NOT invent" rule. Verified before/
+    after: SAN no longer "SanDisk", V no longer "Verizon".
+
+12. **max_tokens fix** — insight + Q&A were truncating mid-word. Plumbed
+    `max_tokens` kwarg through `analyst.analyze()` → both Gemma (was
+    hardcoded 500) AND `GeminiBackend.generate()` (cloud was ignoring
+    the kwarg → effective 1024 cap). Insight + Q&A now request 1800 tokens.
+    GeminiBackend also logs a warning on `MAX_TOKENS`/`LENGTH` finish_reason.
+
+13. **Portfolio chart vs SPY+VOO** — switched from absolute $ to
+    "% from period start". Three-line composed chart: filled area (you)
+    + dashed lines (SPY blue, VOO purple). Legend chips with each line's
+    return %. Backend `/api/alpaca/history` gains `benchmarks` field via
+    `_fetch_benchmarks` (yfinance, 30-min cache, trimmed to equity series
+    length).
+
+14. **vs-SPY pp delta pill on Today hero** — reuses `history.benchmarks.SPY`
+    from the chart query, computes `pnl_pct − spy.return_pct`. Backdrop-
+    blurred bg so it stays readable over the giant P&L number. Red when
+    trailing, green when beating.
+
+15. **AUTONOMOUS DAY-TRADING MVP (the big one):**
+    - `agent_config.py` — SQLite-backed single-row config: budget ($10k),
+      max_concurrent (5), risk_per_trade_pct (1%), daily_loss_limit_pct
+      (2%), entry_window (09:35–15:00 ET), eod_flatten_time (15:50 ET),
+      margin_allowed (False), auto_trade_enabled (False — opt-in),
+      notify_on_trade (True). Halt persistence, pending_open_flatten flag.
+    - `risk_manager.py` — single chokepoint `can_enter_trade()` with 9
+      ordered guards (halt → auto → market_open → entry_window → daily_loss
+      circuit (also auto-halts) → concurrency cap → margin policy →
+      valid ATR → ≥1 share). Sizing = `min(by-risk, by-position-cap,
+      by-cash)`.
+    - `live_agent._try_auto_trade()` — when AUTO enabled and risk_manager
+      green-lights, submits bracket BUY directly via Alpaca; logs
+      `AUTO_EXECUTED` or `AUTO_DECLINED` with reason; in AUTO mode the
+      risk manager is the SOLE authority (no fall-through to Telegram).
+    - `eod_flattener.py` — daemon thread, 60s tick. Two paths:
+      (A) `pending_open_flatten` flag → fire at next market open (handles
+      the off-hours Clean Slate case); (B) regular EOD at `eod_flatten_time`
+      ET when AUTO is on.
+    - `alpaca_executor.flatten_all_positions()` — bulk
+      `close_all_positions` when market open; per-symbol `close_position` →
+      `MarketOrderRequest` with `TimeInForce.OPG` (DAY for fractional) when
+      closed. **Regression caught:** original side detection
+      `str(p.side).lower() == "long"` failed because the SDK returns
+      `PositionSide.LONG` (enum) — every "close" was being submitted as a
+      BUY that would DOUBLE positions. Fix uses `.name`/"LONG" substring.
+      Test `TestFlattenAllSideDetection` locks this down.
+    - 6 backend endpoints: `GET/POST /api/config`,
+      `POST /api/auto-trade/halt`, `POST /api/auto-trade/resume`,
+      `GET /api/auto-trade/status`, `POST /api/flatten-all`.
+    - **Configuration view** (new left-nav entry) — live status card
+      (enabled/halted/today's P&L/positions/today's trades), big Auto-trade
+      toggle, Halt + Clean Slate buttons (with confirms), Capital & Risk
+      knobs, Day-trading schedule, Policy toggles, sticky save bar.
+    - 10 new tests in `TestAgentConfigAndRisk` (seed, halt persistence,
+      whitelist, every refusal branch, sizing math, zero-shares case).
+
+16. **Alpaca-paper off-hours bracket-cancel limbo** — Clean Slate clicked
+    Sunday night triggered Alpaca's `service unavailable` on
+    `close_all_positions`, then `insufficient qty available: held_for_orders`
+    on individual closes (protective brackets from May/June 1 won't fully
+    cancel until next regular session open). Built graceful fallback:
+    detect via error content, set `pending_open_flatten` flag, return a
+    one-line user-friendly message instead of a 9-error wall. EOD daemon
+    auto-retries at next open.
+
+17. **Tax mode (§475(f)) panel** — separates the deploy-set
+    `NUROQ_SECTION_475` env var (NuroQ's wash-sale advisory short-circuit)
+    from the user-acknowledged `section_475_election_filed` (claim that the
+    actual IRS election is on file). Status banner:
+    - env OFF + filed OFF → neutral grey "Default investor regime"
+    - env ON + filed ON   → green "§475(f) elected"
+    - env ON + filed OFF  → red "MISMATCH" with full warning text
+      ("NuroQ's wash-sale guard is disabled but IRS still applies wash-sale
+      rules → losses disallowed on 1099-B → net-positive tax on a net-
+      losing year"). Plus collapsible reference table (wash sales / loss
+      deduction / gain character / year-end mark-to-market / reporting
+      form) and deadline guidance.
+
+### Open items going into Session 8
+
+- **Monday 09:30 ET**: EOD daemon will auto-retry the flatten that's
+  queued (`pending_open_flatten` flag set 2026-06-08 22:43). Confirm
+  Telegram audit fires + account goes flat + margin debt clears. If it
+  doesn't fire, manually click Clean Slate again in Configuration.
+- **Live agent autonomy** is wired but `auto_trade_enabled=false` by
+  default. Flip to ON in Configuration when ready to let it trade. Defaults
+  give ~$100 risk per trade, $200 daily loss limit, max 5 concurrent.
+- **Phase 4 of the day-trading plan** (post-mortem trade journal + DPO
+  data accumulation + backtest harness) — not yet shipped. The MVP gives
+  autonomous paper trading with risk guards; self-improvement is the next
+  meaningful chunk of work.
+- **News on local box** — `NewsPoller` is still gated behind
+  `BG=1`. Local insights will say "no news in last 24h" until that's split
+  the same way Telegram send was. Cloud already works.
+- **Persistent Q&A history** — last 3 Q&As live in component state, lost
+  on reload. Easy `localStorage` fix.
+- **InsightBox + vs-SPY pill on Today variants B/C/D** — currently TodayA
+  only.
+
+### Tests: 110 → 123 green. Deploys: ~18 to main this session.
+
+<details><summary>Session 7 — granular daily-log entries (now consolidated above)</summary>
 
 **Replaced API-key auth with password login (single-user).** The 48-char
 `X-NuroQ-Key` was strong but the UX was bad: cookies expired daily, scoped per
@@ -151,6 +337,8 @@ browser would require updating the firewall to current IP.
   (the TCC-safe path; the old `./.venv/bin/uvicorn` is blocked under `~/Documents`),
   with `NUROQ_BACKGROUND_SERVICES=0`/`NUROQ_AUTOSTART_AGENT=0` so previews don't
   fire Telegram/agent side effects.
+
+</details>
 
 ---
 
