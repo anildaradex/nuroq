@@ -1460,6 +1460,14 @@ class AgentConfigResp(BaseModel):
     halted_at: Optional[int]
     halt_reason: Optional[str]
     pending_open_flatten: Optional[int] = None
+    # §475(f) state: separates the deploy-set env var from the user's
+    # acknowledgement that the actual IRS election has been filed.
+    # `section_475_env_active` is read-only (from NUROQ_SECTION_475);
+    # `section_475_election_filed` is editable via /api/config.
+    # The Configuration UI flags red when these disagree (env ON but the
+    # user hasn't confirmed the election is on file with the IRS).
+    section_475_env_active: bool = False
+    section_475_election_filed: bool = False
     updated_at: int
 
 
@@ -1474,11 +1482,21 @@ class AgentConfigUpdateReq(BaseModel):
     margin_allowed: Optional[bool] = None
     auto_trade_enabled: Optional[bool] = None
     notify_on_trade: Optional[bool] = None
+    section_475_election_filed: Optional[bool] = None
+
+
+def _config_with_env(cfg: dict) -> dict:
+    """Layer the read-only NUROQ_SECTION_475 env-var state on top of the
+    DB-backed config dict. Done here (not in agent_config.py) because the
+    env var is a deployment concern, not a config concern."""
+    cfg = dict(cfg)
+    cfg["section_475_env_active"] = os.getenv("NUROQ_SECTION_475", "0") == "1"
+    return cfg
 
 
 @app.get("/api/config", response_model=AgentConfigResp)
 def get_agent_config():
-    return AgentConfigResp(**_agent_config.get())
+    return AgentConfigResp(**_config_with_env(_agent_config.get()))
 
 
 @app.post("/api/config", response_model=AgentConfigResp)
@@ -1487,7 +1505,7 @@ def update_agent_config(req: AgentConfigUpdateReq):
     module's whitelist. Returns the post-update config."""
     upd = {k: v for k, v in req.model_dump().items() if v is not None}
     cfg = _agent_config.update(**upd)
-    return AgentConfigResp(**cfg)
+    return AgentConfigResp(**_config_with_env(cfg))
 
 
 class HaltReq(BaseModel):
@@ -1499,7 +1517,7 @@ def auto_trade_halt(req: HaltReq):
     """Hard-stop the autonomous trader. Persists across restarts. Does NOT
     flatten positions by itself — call /api/flatten-all if that's intended."""
     cfg = _agent_config.halt(req.reason or "manual")
-    return AgentConfigResp(**cfg)
+    return AgentConfigResp(**_config_with_env(cfg))
 
 
 @app.post("/api/auto-trade/resume", response_model=AgentConfigResp)
@@ -1507,7 +1525,7 @@ def auto_trade_resume():
     """Clear a halt. Does NOT re-enable auto_trade — that's a separate POST
     /api/config so a stale halt → resume doesn't surprise-start trading."""
     cfg = _agent_config.clear_halt()
-    return AgentConfigResp(**cfg)
+    return AgentConfigResp(**_config_with_env(cfg))
 
 
 class FlattenResp(BaseModel):

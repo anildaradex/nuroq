@@ -300,6 +300,11 @@ export interface AgentConfig {
   halted_at: number | null;
   halt_reason: string | null;
   pending_open_flatten: number | null;
+  /** Mirror of NUROQ_SECTION_475 env var — read-only from the SPA. */
+  section_475_env_active: boolean;
+  /** User acknowledgment that the §475(f) election is actually on file with
+   *  the IRS. Mismatching the env var triggers a red warning. */
+  section_475_election_filed: boolean;
   updated_at: number;
 }
 

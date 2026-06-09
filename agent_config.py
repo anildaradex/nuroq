@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS agent_config (
     halted_at             INTEGER,
     halt_reason           TEXT,
     pending_open_flatten  INTEGER,   -- unix ts when off-hours flatten was queued
+    section_475_election_filed INTEGER NOT NULL DEFAULT 0,  -- user acknowledged §475(f) on file
     updated_at            INTEGER NOT NULL
 );
 """
@@ -54,6 +55,11 @@ def _migrate(conn):
     cols = {r[1] for r in conn.execute("PRAGMA table_info(agent_config)").fetchall()}
     if "pending_open_flatten" not in cols:
         conn.execute("ALTER TABLE agent_config ADD COLUMN pending_open_flatten INTEGER")
+    if "section_475_election_filed" not in cols:
+        conn.execute(
+            "ALTER TABLE agent_config "
+            "ADD COLUMN section_475_election_filed INTEGER NOT NULL DEFAULT 0"
+        )
 
 DEFAULTS: dict[str, Any] = {
     "budget":               10000.0,
@@ -68,6 +74,7 @@ DEFAULTS: dict[str, Any] = {
     "notify_on_trade":      True,
     "halted_at":            None,
     "halt_reason":          None,
+    "section_475_election_filed": False,
 }
 
 # Whitelist of fields the /api/config update endpoint will accept.
@@ -75,6 +82,7 @@ EDITABLE_KEYS = {
     "budget", "max_concurrent", "risk_per_trade_pct", "daily_loss_limit_pct",
     "entry_window_start", "entry_window_end", "eod_flatten_time",
     "margin_allowed", "auto_trade_enabled", "notify_on_trade",
+    "section_475_election_filed",
 }
 
 
@@ -133,7 +141,8 @@ def _coerce_store(v: Any) -> Any:
 
 def _coerce_load(key: str, v: Any) -> Any:
     """DB → Python: 0/1 ints for known bool columns become True/False."""
-    bool_keys = {"margin_allowed", "auto_trade_enabled", "notify_on_trade"}
+    bool_keys = {"margin_allowed", "auto_trade_enabled", "notify_on_trade",
+                 "section_475_election_filed"}
     if key in bool_keys:
         return bool(v) if v is not None else False
     return v
@@ -147,13 +156,15 @@ def get() -> dict:
             "SELECT budget, max_concurrent, risk_per_trade_pct, daily_loss_limit_pct, "
             "entry_window_start, entry_window_end, eod_flatten_time, "
             "margin_allowed, auto_trade_enabled, notify_on_trade, "
-            "halted_at, halt_reason, pending_open_flatten, updated_at "
+            "halted_at, halt_reason, pending_open_flatten, "
+            "section_475_election_filed, updated_at "
             "FROM agent_config WHERE id=1"
         ).fetchone()
     keys = ["budget", "max_concurrent", "risk_per_trade_pct", "daily_loss_limit_pct",
             "entry_window_start", "entry_window_end", "eod_flatten_time",
             "margin_allowed", "auto_trade_enabled", "notify_on_trade",
-            "halted_at", "halt_reason", "pending_open_flatten", "updated_at"]
+            "halted_at", "halt_reason", "pending_open_flatten",
+            "section_475_election_filed", "updated_at"]
     return {k: _coerce_load(k, v) for k, v in zip(keys, row)}
 
 

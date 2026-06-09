@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Settings, Save, Loader2, AlertCircle, Power, OctagonX, Eraser, CheckCircle2,
+  Scale, FileWarning,
 } from "lucide-react";
 import { api, type AgentConfig, type AutoTradeStatus } from "../lib/api";
 import { cn, fmtUSD, fmtPct } from "../lib/cn";
@@ -278,6 +279,20 @@ export function ConfigurationView() {
         />
       </Section>
 
+      {/* Tax mode (§475 election) — informational, mostly read-only.
+          Separates "is the env flag on" (deploy concern) from "have you
+          actually filed the election with the IRS" (user concern). Goes
+          red when those disagree so the flag can't be flipped on
+          accidentally without acknowledging tax reality. */}
+      <Section475Panel
+        envActive={cfgQ.data.section_475_env_active}
+        electionFiled={draft.section_475_election_filed}
+        onChangeElectionFiled={(v) => {
+          setField("section_475_election_filed", v);
+          save.mutate({ section_475_election_filed: v });
+        }}
+      />
+
       {/* Save bar — only shown when there are unsaved edits */}
       {dirty && (
         <div className="sticky bottom-3 z-30 card p-3 flex items-center gap-3 shadow-lg
@@ -303,6 +318,150 @@ export function ConfigurationView() {
 }
 
 // ────── helpers ──────
+
+/**
+ * Tax-mode panel — §475(f) "trader mark-to-market" election.
+ *
+ * Why the two flags are separate:
+ *   • `NUROQ_SECTION_475` is a DEPLOY-time env var. It tells NuroQ's
+ *     wash-sale guard to short-circuit (re-entries on losses are allowed,
+ *     because §475 traders don't have wash-sale rules). Set by whoever
+ *     deploys the cloud / runs local, not by the UI user.
+ *   • `section_475_election_filed` is a USER acknowledgement that the
+ *     actual §475(f) election has been filed with the IRS (election
+ *     statement + Form 3115). NOT something NuroQ can verify — only the
+ *     user knows.
+ *
+ * When they disagree (env ON but election_filed OFF), NuroQ is letting
+ * the user re-enter on losses freely while the IRS will still apply
+ * wash-sale rules and disallow those losses on the 1099-B. Worst-case
+ * outcome — net-positive tax bill on a net-losing year. Big red warning.
+ */
+function Section475Panel({
+  envActive, electionFiled, onChangeElectionFiled,
+}: {
+  envActive: boolean;
+  electionFiled: boolean;
+  onChangeElectionFiled: (v: boolean) => void;
+}) {
+  const mismatch = envActive && !electionFiled;
+  const aligned  = envActive === electionFiled;
+
+  return (
+    <div className="card card-tight space-y-3">
+      <div className="text-xxs uppercase tracking-wide opacity-50 flex items-center gap-1.5">
+        <Scale className="w-3 h-3" />
+        Tax mode (§475(f) election)
+      </div>
+
+      {/* Status banner — color reflects (env, filed) alignment */}
+      <div className={cn(
+        "flex items-start gap-2 text-xs p-2 rounded border",
+        mismatch && "border-sell/40 bg-sell/10 text-sell",
+        !mismatch && envActive && aligned && "border-buy/40 bg-buy/10",
+        !envActive && "border-zinc-300 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900",
+      )}>
+        {mismatch
+          ? <FileWarning className="w-4 h-4 shrink-0 mt-0.5" />
+          : envActive
+            ? <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+            : <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 opacity-60" />}
+        <div className="leading-relaxed">
+          {mismatch && (
+            <>
+              <div className="font-semibold mb-1">
+                MISMATCH — §475 software flag is ON but election is NOT marked filed.
+              </div>
+              <div className="opacity-90">
+                NuroQ's wash-sale guard is disabled (re-entries on losses allowed),
+                but if the §475(f) election isn't actually on file with the IRS,
+                wash-sale rules will still apply on your 1099-B and the losses
+                will be disallowed. Either file the election (then mark it below)
+                or set <code className="font-mono">NUROQ_SECTION_475=0</code> on the deploy.
+              </div>
+            </>
+          )}
+          {!mismatch && envActive && (
+            <div>
+              §475(f) elected — full ordinary loss deduction, no wash-sale rules.
+              Year-end positions get marked to market.
+            </div>
+          )}
+          {!envActive && (
+            <div>
+              Default investor regime — wash-sale rules apply (30-day loss
+              re-entry disallowed), capital losses capped at $3,000/yr against
+              ordinary income.
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="space-y-2">
+        <Row
+          label="Software flag (NUROQ_SECTION_475)"
+          help="Deploy-time env var. Controls whether NuroQ's wash-sale advisory short-circuits. NOT editable from the UI — change on the deploy."
+          value={envActive ? "ON" : "OFF"}
+          valueTone={envActive ? "buy" : undefined}
+        />
+        <ToggleRow
+          label="§475(f) election is on file with the IRS"
+          help="Check ONLY after you've actually filed the election (statement + Form 3115) with your CPA. Election deadlines are strict: individuals must file by April 15 of the tax year; new entities have ~75 days from formation. The 2026 individual window is closed."
+          checked={electionFiled}
+          onChange={onChangeElectionFiled}
+        />
+      </div>
+
+      {/* Reference card — the 4-row "what this actually does" table */}
+      <details className="text-xxs opacity-80">
+        <summary className="cursor-pointer font-semibold opacity-100">
+          What §475(f) changes (click to expand)
+        </summary>
+        <table className="w-full mt-2 font-mono">
+          <thead>
+            <tr className="opacity-60">
+              <th className="text-left py-1">Rule</th>
+              <th className="text-left py-1">Default (investor)</th>
+              <th className="text-left py-1">§475(f) trader</th>
+            </tr>
+          </thead>
+          <tbody className="opacity-90">
+            <tr><td className="py-0.5">Wash sales</td><td>Disallowed</td><td className="text-buy">Don't apply</td></tr>
+            <tr><td className="py-0.5">Loss deduction</td><td>$3,000/yr cap</td><td className="text-buy">No cap (ordinary loss)</td></tr>
+            <tr><td className="py-0.5">Gain character</td><td>Capital</td><td>Ordinary</td></tr>
+            <tr><td className="py-0.5">Year-end open positions</td><td>Held</td><td>Marked to market</td></tr>
+            <tr><td className="py-0.5">Reported on</td><td>Sched D / 8949</td><td>Form 4797 + Form 3115</td></tr>
+          </tbody>
+        </table>
+        <div className="mt-2 leading-relaxed">
+          You must also qualify as a <i>trader</i> by IRS criteria — substantial
+          activity (often 4+ days/week, hundreds of trades/year), short holds,
+          profit motive from short-term swings, primary livelihood. Side
+          trading on top of a W-2 typically won't qualify. A CPA familiar with
+          trader taxes is strongly recommended before electing.
+        </div>
+      </details>
+    </div>
+  );
+}
+
+function Row({
+  label, help, value, valueTone,
+}: { label: string; help?: string; value: string; valueTone?: "buy" | "sell" }) {
+  return (
+    <div className="flex items-start justify-between gap-3">
+      <div className="flex-1 min-w-0">
+        <div className="text-xs font-medium">{label}</div>
+        {help && <div className="text-xxs opacity-60 leading-relaxed">{help}</div>}
+      </div>
+      <div className={cn(
+        "font-mono text-xs font-semibold",
+        valueTone === "buy" && "text-buy",
+        valueTone === "sell" && "text-sell",
+      )}>{value}</div>
+    </div>
+  );
+}
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
