@@ -16,6 +16,7 @@ import { ScannerView } from "./views/ScannerView";
 import { SignalsView } from "./views/SignalsView";
 import { SystemView } from "./views/SystemView";
 import { LogsView } from "./views/LogsView";
+import { ConfigurationView } from "./views/ConfigurationView";
 import { api, type AuthStatus } from "./lib/api";
 import { haptic, hideSplashWhenReady, onAppResume, syncStatusBar } from "./lib/native";
 
@@ -121,6 +122,7 @@ function AuthenticatedApp({ mustChangePassword }: { mustChangePassword: boolean 
           {view === "signals"   && <SignalsView onDrillIn={drillIn} />}
           {view === "system"    && <SystemView />}
           {view === "logs"      && <LogsView />}
+          {view === "config"    && <ConfigurationView />}
         </main>
       </div>
       <QuickTrade prefill={qtPrefill} />

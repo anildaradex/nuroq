@@ -4373,6 +4373,17 @@ class AgentLoop:
 # Global Agent Instance
 agent = AgentLoop()
 
+# EOD flattener — runs as a background daemon, no-op until auto_trade_enabled
+# is on (gates on agent_config). Starts unconditionally so toggling the flag
+# in the Configuration view takes effect without a backend restart.
+try:
+    from eod_flattener import EODFlattener
+    eod_flattener = EODFlattener(alpaca_api, logger)
+    eod_flattener.start()
+except Exception as _e:
+    logger.log(f"⚠️ EOD flattener init failed: {_e}", level="WARNING")
+    eod_flattener = None
+
 @prevent_sleep
 def deep_market_scan(progress=gr.Progress()):
     """Scans ~12,000 stocks with prioritized Quant filters for top 100 movers."""

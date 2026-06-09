@@ -757,12 +757,103 @@ class LiveAgent:
             action="FIRED_BUY", notes=reasoning,
         )
         state.last_trigger_ts = datetime.now().timestamp()
+
+        # ─── Autonomy branch ──────────────────────────────────────────────
+        # If auto-trade is enabled AND the risk manager green-lights the
+        # entry, submit a bracket order directly — no Telegram approval.
+        # Otherwise fall through to the existing approval flow.
+        if self._try_auto_trade(ticker, state.last_price or 0, reasoning):
+            self.logger.log(f"🤖 LiveAgent: AUTO BUY {ticker} fired (no approval).")
+            return
+
         try:
             self._fire_buy(ticker, state.last_price or 0, new, reasoning)
             self.logger.log(f"🎯 LiveAgent: BUY crossing {ticker} {prev}→{new} fired.")
         except Exception as e:
             self.logger.log(f"⚠️ LiveAgent: BUY fire callback failed for {ticker}: {e}",
                             level="ERROR")
+
+    def _try_auto_trade(self, ticker: str, price: float, reasoning: str) -> bool:
+        """If AUTO mode + risk manager allow, place a bracket BUY immediately.
+        Returns True if a trade was attempted (success or failure), False if
+        we should fall through to the human-approval path. The risk manager
+        is the only authority — this function trusts it."""
+        try:
+            import agent_config
+            cfg = agent_config.get()
+            if not cfg.get("auto_trade_enabled") or cfg.get("halted_at"):
+                return False
+        except Exception:
+            return False
+
+        try:
+            import risk_manager
+            from scoring import calculate_technicals
+            from history_cache import history_cache
+            from alpaca_executor import alpaca_api as ae
+
+            # Need ATR for sizing (same source the existing approval flow uses).
+            bars = history_cache.get(ticker, allow_stale=True) or []
+            techs = calculate_technicals(bars) if bars else {}
+            atr = float((techs or {}).get("atr") or max(price * 0.02, 0.5))
+
+            # Live account state for the gatekeeper.
+            acct = ae.get_account_summary() or {}
+            positions = ae.list_positions() or []
+            decision = risk_manager.can_enter_trade(
+                symbol=ticker, entry=price, atr=atr,
+                open_positions=len(positions),
+                cash=float(acct.get("cash") or 0),
+                todays_pl=float(acct.get("todays_pl") or 0),
+                equity=float(acct.get("equity") or 0),
+                on_margin=float(acct.get("cash") or 0) < 0,
+            )
+            if not decision.ok:
+                self.logger.log(
+                    f"🤖 AUTO declined {ticker}: {decision.reason}", level="INFO"
+                )
+                # We DID see it; logging the suppression but NOT falling through
+                # to the approval flow either (auto mode means: this is the only
+                # path). Returning True signals "handled, don't fall through".
+                live_triggers.log(
+                    ticker, "BUY", 0, 0, price,
+                    action="AUTO_DECLINED",
+                    notes=f"risk_manager: {decision.reason}",
+                )
+                return True
+
+            s = decision.sizing
+            # Submit a bracket BUY. The existing submit_bracket_order handles
+            # the OCO SELL legs at SL/TP. No Telegram approval, no extra checks.
+            res = ae.submit_bracket_order(
+                ticker=ticker, action="BUY", shares=s.shares,
+                sl=s.sl, tp=s.tp, limit_price=None,
+            )
+            live_triggers.log(
+                ticker, "BUY", 0, 0, price,
+                action="AUTO_EXECUTED",
+                notes=(f"shares={s.shares} entry≈${price:.2f} "
+                       f"SL=${s.sl:.2f} TP=${s.tp:.2f} risk=${s.risk_dollars:.0f} | {res[:200]}"),
+            )
+            # Audit Telegram. Notification-only, no buttons.
+            if cfg.get("notify_on_trade"):
+                try:
+                    from dashboard import gatekeeper
+                    gatekeeper.send_notification(
+                        f"🤖 AUTO BUY {ticker} · {s.shares} @ ${price:.2f}\n"
+                        f"SL ${s.sl:.2f} · TP ${s.tp:.2f} · risk ${s.risk_dollars:.0f}\n"
+                        f"{reasoning[:200]}"
+                    )
+                except Exception:
+                    pass
+        except Exception as e:
+            self.logger.log(f"⚠️ AUTO trade attempt for {ticker} failed: {e}",
+                            level="ERROR")
+            live_triggers.log(
+                ticker, "BUY", 0, 0, price,
+                action="AUTO_ERROR", notes=str(e)[:300],
+            )
+        return True
 
     def _handle_sell_crossing(self, state: TickerState, prev: int, new: int) -> None:
         ticker = state.ticker

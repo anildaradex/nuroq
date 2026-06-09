@@ -1437,6 +1437,145 @@ class AgentLogRow(BaseModel):
     notes: Optional[str]
 
 
+# ─── Auto-trade configuration + control ──────────────────────────────────────
+#
+# The Configuration tab in the SPA reads/writes this single row. Three control
+# endpoints (halt / resume / flatten-all) let the user pull the e-brake from
+# anywhere — phone, browser, curl.
+
+import agent_config as _agent_config
+
+
+class AgentConfigResp(BaseModel):
+    budget: float
+    max_concurrent: int
+    risk_per_trade_pct: float
+    daily_loss_limit_pct: float
+    entry_window_start: str
+    entry_window_end: str
+    eod_flatten_time: str
+    margin_allowed: bool
+    auto_trade_enabled: bool
+    notify_on_trade: bool
+    halted_at: Optional[int]
+    halt_reason: Optional[str]
+    pending_open_flatten: Optional[int] = None
+    updated_at: int
+
+
+class AgentConfigUpdateReq(BaseModel):
+    budget: Optional[float] = None
+    max_concurrent: Optional[int] = None
+    risk_per_trade_pct: Optional[float] = None
+    daily_loss_limit_pct: Optional[float] = None
+    entry_window_start: Optional[str] = None
+    entry_window_end: Optional[str] = None
+    eod_flatten_time: Optional[str] = None
+    margin_allowed: Optional[bool] = None
+    auto_trade_enabled: Optional[bool] = None
+    notify_on_trade: Optional[bool] = None
+
+
+@app.get("/api/config", response_model=AgentConfigResp)
+def get_agent_config():
+    return AgentConfigResp(**_agent_config.get())
+
+
+@app.post("/api/config", response_model=AgentConfigResp)
+def update_agent_config(req: AgentConfigUpdateReq):
+    """Update one or more config fields. Unknown keys silently dropped by the
+    module's whitelist. Returns the post-update config."""
+    upd = {k: v for k, v in req.model_dump().items() if v is not None}
+    cfg = _agent_config.update(**upd)
+    return AgentConfigResp(**cfg)
+
+
+class HaltReq(BaseModel):
+    reason: str = "manual"
+
+
+@app.post("/api/auto-trade/halt", response_model=AgentConfigResp)
+def auto_trade_halt(req: HaltReq):
+    """Hard-stop the autonomous trader. Persists across restarts. Does NOT
+    flatten positions by itself — call /api/flatten-all if that's intended."""
+    cfg = _agent_config.halt(req.reason or "manual")
+    return AgentConfigResp(**cfg)
+
+
+@app.post("/api/auto-trade/resume", response_model=AgentConfigResp)
+def auto_trade_resume():
+    """Clear a halt. Does NOT re-enable auto_trade — that's a separate POST
+    /api/config so a stale halt → resume doesn't surprise-start trading."""
+    cfg = _agent_config.clear_halt()
+    return AgentConfigResp(**cfg)
+
+
+class FlattenResp(BaseModel):
+    closed_count: int
+    cancelled_orders: int
+    queued_for_open: int = 0   # MOO orders queued when market is closed
+    errors: list[str]
+
+
+@app.post("/api/flatten-all", response_model=FlattenResp)
+def flatten_all():
+    """Sell every open Alpaca position immediately. If the market is closed,
+    Alpaca queues the SELLs for next regular session open. Also cancels open
+    SL/TP bracket orders so they don't fight the flatten."""
+    res = dash.alpaca_api.flatten_all_positions()
+    return FlattenResp(**res)
+
+
+class AutoTradeStatusResp(BaseModel):
+    enabled: bool
+    halted: bool
+    halt_reason: Optional[str]
+    today_buys: int
+    today_sells: int
+    open_positions: int
+    todays_pl: float
+    todays_pl_pct: float
+    equity: float
+    cash: float
+    on_margin: bool
+
+
+@app.get("/api/auto-trade/status", response_model=AutoTradeStatusResp)
+def auto_trade_status():
+    cfg = _agent_config.get()
+    acct = dash.alpaca_api.get_account_summary() or {}
+    positions = dash.alpaca_api.list_positions() or []
+    try:
+        with sqlite3.connect(dash.DB_PATH) as conn:
+            today_start = int(time.time()) - 24 * 3600
+            buys = conn.execute(
+                "SELECT COUNT(*) FROM live_triggers WHERE ts > ? "
+                "AND action IN ('FIRED_BUY','AUTO_EXECUTED')",
+                (today_start,),
+            ).fetchone()[0]
+            sells = conn.execute(
+                "SELECT COUNT(*) FROM live_triggers WHERE ts > ? "
+                "AND action='FIRED_SELL'",
+                (today_start,),
+            ).fetchone()[0]
+    except Exception:
+        buys = sells = 0
+    cash = float(acct.get("cash") or 0)
+    return AutoTradeStatusResp(
+        enabled=bool(cfg.get("auto_trade_enabled")),
+        halted=bool(cfg.get("halted_at")),
+        halt_reason=cfg.get("halt_reason"),
+        today_buys=buys,
+        today_sells=sells,
+        open_positions=len(positions),
+        todays_pl=float(acct.get("todays_pl") or 0),
+        todays_pl_pct=float(acct.get("todays_pl_pct") or 0),
+        equity=float(acct.get("equity") or 0),
+        cash=cash,
+        on_margin=cash < 0,
+    )
+
+
 @app.get("/api/agent/log", response_model=list[AgentLogRow])
 def agent_log(limit: int = 100):
     try:

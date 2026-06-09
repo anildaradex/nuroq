@@ -1,12 +1,12 @@
 import {
   LineChart, BarChart3, Target, ScanSearch, Briefcase,
-  Bot, History, Activity, FileText,
+  Bot, History, Activity, FileText, Settings,
 } from "lucide-react";
 import { cn } from "../lib/cn";
 
 export type ViewId =
   | "today" | "analyze" | "watchlist" | "scanner"
-  | "portfolio" | "agent" | "signals" | "system" | "logs";
+  | "portfolio" | "agent" | "signals" | "system" | "logs" | "config";
 
 interface NavItem {
   id: ViewId;
@@ -24,6 +24,7 @@ const NAV: NavItem[] = [
   { id: "signals",    label: "Signal History", Icon: History },
   { id: "system",     label: "System",         Icon: Activity },
   { id: "logs",       label: "Logs",           Icon: FileText },
+  { id: "config",     label: "Configuration",  Icon: Settings },
 ];
 
 interface Props {

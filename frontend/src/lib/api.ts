@@ -286,6 +286,46 @@ async function post<T>(url: string, body?: unknown): Promise<T> {
   return r.json();
 }
 
+export interface AgentConfig {
+  budget: number;
+  max_concurrent: number;
+  risk_per_trade_pct: number;
+  daily_loss_limit_pct: number;
+  entry_window_start: string;    // "HH:MM" ET
+  entry_window_end: string;
+  eod_flatten_time: string;
+  margin_allowed: boolean;
+  auto_trade_enabled: boolean;
+  notify_on_trade: boolean;
+  halted_at: number | null;
+  halt_reason: string | null;
+  pending_open_flatten: number | null;
+  updated_at: number;
+}
+
+export type AgentConfigUpdate = Partial<Omit<AgentConfig, "halted_at" | "halt_reason" | "updated_at">>;
+
+export interface FlattenResp {
+  closed_count: number;
+  cancelled_orders: number;
+  queued_for_open: number;
+  errors: string[];
+}
+
+export interface AutoTradeStatus {
+  enabled: boolean;
+  halted: boolean;
+  halt_reason: string | null;
+  today_buys: number;
+  today_sells: number;
+  open_positions: number;
+  todays_pl: number;
+  todays_pl_pct: number;
+  equity: number;
+  cash: number;
+  on_margin: boolean;
+}
+
 export interface PortfolioContribution {
   ticker: string;
   intraday_pl: number;
@@ -377,6 +417,14 @@ export const api = {
   insightToday:   (force = false) => get<Insight>(`/api/insight/today${force ? "?force=true" : ""}`),
   askPortfolio:   (question: string) =>
                     post<PortfolioAsk>("/api/ask-portfolio", { question }),
+  // Auto-trade configuration + control
+  getConfig:        () => get<AgentConfig>("/api/config"),
+  updateConfig:     (patch: AgentConfigUpdate) => post<AgentConfig>("/api/config", patch),
+  autoTradeStatus:  () => get<AutoTradeStatus>("/api/auto-trade/status"),
+  autoTradeHalt:    (reason = "manual") =>
+                      post<AgentConfig>("/api/auto-trade/halt", { reason }),
+  autoTradeResume: () => post<AgentConfig>("/api/auto-trade/resume"),
+  flattenAll:      () => post<FlattenResp>("/api/flatten-all"),
   // Scan is async (long-running): start it, then poll scanStatus until !running.
   scan: (mode: "top20" | "global") =>
     post<{ started: boolean; running: boolean; message: string }>("/api/scan", { mode }),

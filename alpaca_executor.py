@@ -418,6 +418,178 @@ class LiveAlpacaExecutor:
             logger.error(err)
             return err
 
+    def flatten_all_positions(self) -> dict:
+        """
+        Close every Alpaca position. Cancels open orders first so SL/TP
+        brackets don't fight the flatten. Used by:
+          • "Clean Slate / Sell All" button on the Configuration view.
+          • EOD flattener daemon (~15:50 ET).
+          • Emergency-stop call paths.
+
+        Two execution paths depending on whether the market is open:
+          • Market OPEN  → `close_all_positions(cancel_orders=True)` (one API
+            call, market orders, fills near-instant).
+          • Market CLOSED → per-position Market-on-Open (`TimeInForce.OPG`)
+            SELLs. Alpaca's bulk `close_all_positions` returns
+            `service unavailable` outside hours; individual OPG orders queue
+            cleanly for the next regular open, which is exactly the
+            "sell on market open" semantics the user asked for.
+
+        Returns: {"closed_count": N, "cancelled_orders": M, "errors": [...],
+                  "queued_for_open": K}
+        """
+        out = {
+            "closed_count": 0, "cancelled_orders": 0,
+            "errors": [], "queued_for_open": 0,
+        }
+        if not self._ensure_connection():
+            out["errors"].append("Alpaca not connected (simulated)")
+            return out
+
+        # 1) Cancel ALL open orders (bracket SL/TP legs, pending limits, etc.)
+        #    so they don't fight the flatten or leak past it.
+        try:
+            self.client.cancel_orders()
+            out["cancelled_orders"] = -1   # alpaca doesn't return a count
+        except Exception as e:
+            out["errors"].append(f"cancel_orders failed: {e}")
+
+        # Cancellations are async at Alpaca — orders go to `pending_cancel`
+        # for ~1-3 seconds before transitioning to `canceled`. While in
+        # pending_cancel the shares are still `held_for_orders` and any new
+        # SELL gets rejected with "insufficient qty available". Poll the
+        # open-orders list briefly until all are gone (or 8s budget hit).
+        import time as _t
+        deadline = _t.time() + 8.0
+        while _t.time() < deadline:
+            try:
+                from alpaca.trading.requests import GetOrdersRequest
+                from alpaca.trading.enums    import QueryOrderStatus
+                pending = self.client.get_orders(
+                    filter=GetOrdersRequest(status=QueryOrderStatus.OPEN, limit=200)
+                )
+                if not pending:
+                    break
+            except Exception:
+                break
+            _t.sleep(0.5)
+
+        # 2) Probe market status. If we can't determine it, try the bulk path
+        #    first and fall back on failure.
+        market_open = False
+        try:
+            clock = self.client.get_clock()
+            market_open = bool(getattr(clock, "is_open", False))
+        except Exception:
+            pass
+
+        # 3a) Bulk close when market is open (fast path).
+        if market_open:
+            try:
+                resp = self.client.close_all_positions(cancel_orders=True)
+                closed = 0
+                for r in (resp or []):
+                    status = getattr(r, "status", None) or 0
+                    if 200 <= int(status) < 300:
+                        closed += 1
+                    else:
+                        body = getattr(r, "body", None)
+                        out["errors"].append(
+                            f"{getattr(r, 'symbol', '?')}: status={status} body={body}"
+                        )
+                out["closed_count"] = closed
+                logger.info(
+                    f"🧹 Flatten-all (market open): closed {closed} positions."
+                )
+                return out
+            except Exception as e:
+                out["errors"].append(f"close_all_positions failed: {e}; falling back to MOO")
+
+        # 3b) Market closed → per-position close. Try Alpaca's own
+        #     `close_position(symbol)` first — it handles the "cancel + close"
+        #     atomically server-side, which dodges the held_for_orders dance
+        #     that off-hours bracket cancellations otherwise trip on.
+        #     If that fails (paper off-hours sometimes returns 503), fall back
+        #     to submitting a Market-on-Open SELL with the right side detected
+        #     defensively (NOT `str(p.side).lower() == "long"` — that's the
+        #     bug we fixed in the 22:31 regression; see TestFlattenAllSideDetection).
+        try:
+            from alpaca.trading.requests import MarketOrderRequest, ClosePositionRequest
+            from alpaca.trading.enums    import OrderSide, TimeInForce
+            positions = self.client.get_all_positions()
+        except Exception as e:
+            out["errors"].append(f"list positions for off-hours fallback failed: {e}")
+            return out
+
+        queued = 0
+        # If EVERY position fails with the "insufficient qty / held_for_orders"
+        # lockout (Alpaca paper holds shares against pending_cancel brackets
+        # until next market open), set pending_open_flatten so the EOD daemon
+        # auto-retries the moment shares are released. Tracked here to decide
+        # at the end of the loop.
+        lockout_hits = 0
+        total_attempts = 0
+        for p in positions or []:
+            sym = getattr(p, "symbol", "?")
+            qty = abs(float(getattr(p, "qty", 0) or 0))
+            if qty <= 0:
+                continue
+
+            total_attempts += 1
+            # Preferred path: ClosePositionRequest handles cancel+close.
+            try:
+                self.client.close_position(sym, close_options=ClosePositionRequest(qty=str(qty)))
+                queued += 1
+                continue
+            except Exception as e1:
+                close_err = str(e1)[:240]
+                if "held_for_orders" in close_err or "insufficient qty" in close_err:
+                    lockout_hits += 1
+
+            # Fallback: explicit MarketOrderRequest with OPG (or DAY for fractional).
+            side_raw = getattr(p, "side", None)
+            side_name = (getattr(side_raw, "name", None) or str(side_raw) or "long")
+            is_long = "LONG" in side_name.upper()
+            close_side = OrderSide.SELL if is_long else OrderSide.BUY
+            is_fractional = qty != int(qty)
+            tif = TimeInForce.DAY if is_fractional else TimeInForce.OPG
+            try:
+                req = MarketOrderRequest(
+                    symbol=sym, qty=qty, side=close_side, time_in_force=tif,
+                )
+                self.client.submit_order(order_data=req)
+                queued += 1
+            except Exception as e2:
+                out["errors"].append(
+                    f"{sym}: close_position→{close_err} | "
+                    f"{tif.name} {close_side.name}→{str(e2)[:200]}"
+                )
+        out["queued_for_open"] = queued
+
+        # If every position hit the held_for_orders lockout, the user is in
+        # Alpaca-paper's off-hours bracket-cancel limbo. Set the pending flag
+        # so the EOD daemon auto-retries the flatten the moment shares clear
+        # (typically a minute or two after the next market open).
+        if queued == 0 and total_attempts > 0 and lockout_hits == total_attempts and not market_open:
+            try:
+                import agent_config
+                agent_config.request_open_flatten()
+                # Replace the error wall with one user-friendly line.
+                out["errors"] = [
+                    f"Off-hours bracket lockout: all {lockout_hits} positions have shares "
+                    f"held_for_orders against pending_cancel brackets. Alpaca paper releases "
+                    f"these only at next market open — auto-retry queued (pending_open_flatten)."
+                ]
+            except Exception:
+                pass
+
+        logger.info(
+            f"🧹 Flatten-all (market closed): queued {queued} Market-on-Open "
+            f"SELLs for next session, errors={len(out['errors'])}, "
+            f"lockout_hits={lockout_hits}/{total_attempts}."
+        )
+        return out
+
     def get_open_orders(self, limit: int = 50) -> list:
         """
         Returns pending/open orders at Alpaca (anything not yet filled/cancelled).

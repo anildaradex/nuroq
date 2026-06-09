@@ -290,6 +290,190 @@ class TestExecutionPortfolio(unittest.TestCase):
         finally:
             os.remove(test_db)
 
+class TestAgentConfigAndRisk(unittest.TestCase):
+    """Tests for agent_config (SQLite-backed knobs) + risk_manager (gatekeeper).
+
+    Goal: protect the safety guards from accidental regressions. The risk
+    manager is the single chokepoint for every AUTO entry — if it lets a
+    bad entry through, real money is at stake later. These tests force
+    each branch (each early-return reason).
+    """
+
+    def setUp(self):
+        import tempfile, os, importlib
+        # Each test gets a fresh DB so config seeds/halts don't leak.
+        tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        tmp.close()
+        self._db = tmp.name
+        os.environ["NUROQ_DB_PATH"] = self._db
+        import agent_config, risk_manager
+        importlib.reload(agent_config)
+        importlib.reload(risk_manager)
+        self.agent_config = agent_config
+        self.risk_manager = risk_manager
+
+    def tearDown(self):
+        import os
+        try: os.remove(self._db)
+        except Exception: pass
+
+    def _enable_and_open_market(self):
+        """Default config + enable AUTO + monkey-patch market open + entry window."""
+        self.agent_config.update(auto_trade_enabled=True)
+        # Patch the time-of-day checks so they pass regardless of when tests run.
+        self.risk_manager._market_open = lambda now: True
+        self.risk_manager._in_entry_window = lambda now, cfg: True
+
+    def test_seed_on_first_read(self):
+        cfg = self.agent_config.get()
+        self.assertEqual(cfg["budget"], 10000)
+        self.assertEqual(cfg["max_concurrent"], 5)
+        self.assertEqual(cfg["risk_per_trade_pct"], 1.0)
+        self.assertEqual(cfg["daily_loss_limit_pct"], 2.0)
+        self.assertFalse(cfg["auto_trade_enabled"])
+        self.assertFalse(cfg["margin_allowed"])
+        self.assertIsNone(cfg["halted_at"])
+
+    def test_update_whitelist_rejects_unknown_keys(self):
+        cfg = self.agent_config.update(budget=20000, evil_key="oops")
+        self.assertEqual(cfg["budget"], 20000)
+        self.assertNotIn("evil_key", cfg)
+
+    def test_halt_persists_and_blocks_auto(self):
+        self.agent_config.halt("test reason")
+        cfg = self.agent_config.get()
+        self.assertIsNotNone(cfg["halted_at"])
+        self.assertEqual(cfg["halt_reason"], "test reason")
+        # Halt MUST also disable auto so a stale enable+halt combo doesn't
+        # surprise-start when the halt clears.
+        self.assertFalse(cfg["auto_trade_enabled"])
+
+    def test_decision_blocked_when_auto_disabled(self):
+        d = self.risk_manager.can_enter_trade(
+            "NVDA", 100, 2.0, open_positions=0, cash=5000,
+            todays_pl=0, equity=10000, on_margin=False,
+        )
+        self.assertFalse(d.ok)
+        self.assertIn("auto_trade disabled", d.reason)
+
+    def test_decision_blocked_when_halted(self):
+        self._enable_and_open_market()
+        self.agent_config.halt("circuit tripped")
+        d = self.risk_manager.can_enter_trade(
+            "NVDA", 100, 2.0, open_positions=0, cash=5000,
+            todays_pl=0, equity=10000, on_margin=False,
+        )
+        self.assertFalse(d.ok)
+        self.assertIn("halted", d.reason)
+
+    def test_decision_blocked_by_concurrency_cap(self):
+        self._enable_and_open_market()
+        self.agent_config.update(max_concurrent=3)
+        d = self.risk_manager.can_enter_trade(
+            "NVDA", 100, 2.0, open_positions=3, cash=5000,
+            todays_pl=0, equity=10000, on_margin=False,
+        )
+        self.assertFalse(d.ok)
+        self.assertIn("concurrency cap", d.reason)
+
+    def test_decision_blocked_when_margin_disallowed_and_on_margin(self):
+        self._enable_and_open_market()
+        d = self.risk_manager.can_enter_trade(
+            "NVDA", 100, 2.0, open_positions=0,
+            cash=-1000,            # already on margin
+            todays_pl=0, equity=10000, on_margin=True,
+        )
+        self.assertFalse(d.ok)
+        self.assertIn("margin disabled", d.reason)
+
+    def test_decision_trips_circuit_on_daily_loss(self):
+        self._enable_and_open_market()  # daily limit default = 2%
+        d = self.risk_manager.can_enter_trade(
+            "NVDA", 100, 2.0, open_positions=0, cash=5000,
+            todays_pl=-300,        # -3% on $10k equity → past 2% limit
+            equity=10000, on_margin=False,
+        )
+        self.assertFalse(d.ok)
+        # Loss check tripping should ALSO halt the agent (persistent).
+        self.assertTrue(self.agent_config.get()["halted_at"])
+
+    def test_decision_sizes_by_risk_budget(self):
+        self._enable_and_open_market()
+        # entry $100, ATR $2 → SL $96 (2·ATR), per-share risk $4
+        # risk budget = 1% of $10k = $100 → shares_by_risk = 25
+        # per-position cap = $10k/5 = $2k → shares_by_size = 20
+        # cash $5000 → shares_by_cash = 50
+        # Final shares = min(25, 20, 50) = 20
+        d = self.risk_manager.can_enter_trade(
+            "NVDA", 100, 2.0, open_positions=0, cash=5000,
+            todays_pl=0, equity=10000, on_margin=False,
+        )
+        self.assertTrue(d.ok, msg=d.reason)
+        self.assertEqual(d.sizing.shares, 20)
+        self.assertAlmostEqual(d.sizing.sl, 96.0, places=2)
+        self.assertAlmostEqual(d.sizing.tp, 108.0, places=2)   # entry + 4·ATR
+
+    def test_decision_zero_shares_returns_failure(self):
+        self._enable_and_open_market()
+        # $1000 budget + 1% risk = $10 risk; entry $500, ATR $1 → per-share risk
+        # $2 → shares_by_risk = 5; per-position cap = $1000/5 = $200 → 0 shares.
+        self.agent_config.update(budget=1000)
+        d = self.risk_manager.can_enter_trade(
+            "NVDA", 500, 1.0, open_positions=0, cash=2000,
+            todays_pl=0, equity=10000, on_margin=False,
+        )
+        self.assertFalse(d.ok)
+        self.assertIn("sized to 0", d.reason)
+
+
+class TestFlattenAllSideDetection(unittest.TestCase):
+    """REGRESSION: flatten_all_positions must submit SELLs for long positions,
+    not BUYs. Earlier code did `str(p.side).lower() == "long"` which is False
+    when the SDK returns the `PositionSide.LONG` enum (str → "PositionSide.LONG"),
+    so every close ended up as a BUY — doubling positions instead of closing them.
+
+    The fix uses `getattr(side, "name", ...)` + substring "LONG" match; this
+    test forces the enum shape Alpaca's SDK actually returns so the bug stays
+    caught.
+    """
+    @patch('alpaca_executor.TradingClient')
+    def test_long_position_submits_sell_market_order(self, mock_client_class):
+        from unittest.mock import MagicMock
+        # Mock the Alpaca client and inject a "long" enum-shaped side.
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+        mock_client.get_account().status.value = "ACTIVE"
+        mock_client.get_clock().is_open = False   # force the off-hours path
+        # Force the close_position() preferred path to fail so we exercise
+        # the MarketOrderRequest fallback (where the side-detection bug lived).
+        mock_client.close_position.side_effect = Exception("simulated paper off-hours fail")
+        # Simulate Alpaca's PositionSide enum: has a .name = "LONG", and
+        # str(enum) returns "PositionSide.LONG" (the original buggy case).
+        class _FakeSide:
+            name = "LONG"
+            def __str__(self): return "PositionSide.LONG"
+        pos = MagicMock()
+        # Defensive: held_for_orders must be 0 so the "all_held" off-hours
+        # short-circuit doesn't fire before we hit the close path.
+        pos.symbol = "NVDA"; pos.qty = "10"; pos.side = _FakeSide()
+        pos.held_for_orders = 0
+        mock_client.get_all_positions.return_value = [pos]
+
+        from alpaca_executor import LiveAlpacaExecutor
+        ae = LiveAlpacaExecutor()
+        result = ae.flatten_all_positions()
+
+        # The fallback path must have submitted a SELL order on NVDA.
+        self.assertEqual(result["queued_for_open"], 1, msg=str(result))
+        submit_calls = [c for c in mock_client.submit_order.call_args_list
+                        if c.kwargs.get("order_data") is not None]
+        self.assertTrue(submit_calls, "submit_order was never called")
+        order_data = submit_calls[-1].kwargs["order_data"]
+        self.assertEqual(getattr(order_data.side, "name", str(order_data.side)),
+                         "SELL", msg=f"expected SELL, got {order_data.side!r}")
+        self.assertEqual(order_data.symbol, "NVDA")
+
+
 class TestAlpacaExecution(unittest.TestCase):
     @patch('alpaca_executor.TradingClient')
     def test_alpaca_live_trade_success(self, mock_client_class):
