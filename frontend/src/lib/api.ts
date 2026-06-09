@@ -26,11 +26,18 @@ export interface AlpacaSummary {
   thirty_day_return_pct: number | null;
 }
 
+export interface BenchmarkSeries {
+  closes: number[];
+  return_pct: number;
+}
 export interface EquityHistory {
   equity_series: number[];
   timestamps: number[];
   return_pct: number;
   period_days: number;
+  /** Overlay benchmarks (default SPY + VOO). Frontend normalizes to % so the
+   *  user's equity line and a ~$700 ETF line are visually comparable. */
+  benchmarks: Record<string, BenchmarkSeries>;
 }
 
 export interface PendingOrder {

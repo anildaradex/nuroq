@@ -409,25 +409,97 @@ def alpaca_summary():
     )
 
 
+class BenchmarkSeries(BaseModel):
+    closes: list[float]      # daily closes, aligned to the equity_series indices
+    return_pct: float        # total %-change over the same window
+
+
 class EquityHistoryResp(BaseModel):
     equity_series: list[float]
     timestamps: list[int]
     return_pct: float
     period_days: int
+    benchmarks: dict[str, BenchmarkSeries] = {}   # e.g. {"SPY": …, "VOO": …}
+
+
+# In-memory cache for benchmark history — yfinance batch fetch takes 1-2s
+# and the data only changes once a day per close. Key: (symbols, days).
+_bench_cache: dict = {}
+_BENCH_TTL_SEC = 60 * 30
+
+
+def _fetch_benchmarks(symbols: list[str], n_points: int, days: int) -> dict[str, BenchmarkSeries]:
+    """Daily closes for a list of benchmark tickers, trimmed to roughly match
+    the user's equity-series length so the chart's three lines line up by index.
+
+    Cached 30 min — yfinance latency dominates this endpoint otherwise. On any
+    failure returns {} so the chart silently degrades to just the user's line."""
+    if not symbols or n_points < 2:
+        return {}
+    key = (tuple(symbols), days, n_points)
+    now = time.time()
+    cached = _bench_cache.get(key)
+    if cached and now - cached["at"] < _BENCH_TTL_SEC:
+        return cached["data"]
+
+    import yfinance as yf
+    try:
+        # Pull a bit more than `days` (weekends, holidays) so we have enough
+        # closes after dropping NaN rows.
+        period = f"{max(days + 7, 10)}d"
+        data = yf.download(
+            symbols, period=period, group_by="ticker",
+            auto_adjust=True, progress=False, threads=True,
+        )
+    except Exception as e:
+        import logging; logging.getLogger(__name__).warning(f"benchmark fetch failed: {e}")
+        return {}
+
+    out: dict[str, BenchmarkSeries] = {}
+    for sym in symbols:
+        try:
+            if len(symbols) == 1:
+                closes_series = data["Close"]
+            else:
+                closes_series = data[sym]["Close"]
+            closes = [float(c) for c in closes_series.dropna().tolist()]
+            if len(closes) < 2:
+                continue
+            # Trim to n_points trailing days so it aligns with the user's
+            # equity series (Alpaca returns N points; benchmark returns ~N too,
+            # taking the last N gives the most-recent matching window).
+            closes = closes[-n_points:]
+            ret = (closes[-1] / closes[0] - 1) * 100 if closes[0] else 0.0
+            out[sym] = BenchmarkSeries(closes=closes, return_pct=round(ret, 2))
+        except Exception:
+            continue
+
+    _bench_cache[key] = {"at": now, "data": out}
+    return out
 
 
 @app.get("/api/alpaca/history", response_model=EquityHistoryResp)
-def alpaca_history(days: int = 30):
+def alpaca_history(days: int = 30, benchmarks: str = "SPY,VOO"):
     """
-    Equity-value series for the sparkline on the Today view. Returns the
-    same shape Alpaca's portfolio_history API provides.
+    Equity-value series for the Today sparkline + the Portfolio comparison chart.
+
+    `benchmarks` (comma-separated) is overlaid on the chart so the user can see
+    relative performance vs the broader market. Frontend normalizes each series
+    to "% from baseline" so a $96k equity line and a $737 SPY line are visually
+    comparable. Pass empty string to skip the benchmark fetch entirely.
     """
     hist = dash.alpaca_api.get_portfolio_history(period_days=days)
+    equity_series = hist.get("equity_series", []) or []
+
+    bench_syms = [s.strip().upper() for s in (benchmarks or "").split(",") if s.strip()]
+    bench_data = _fetch_benchmarks(bench_syms, len(equity_series), days) if bench_syms else {}
+
     return EquityHistoryResp(
-        equity_series=hist.get("equity_series", []) or [],
+        equity_series=equity_series,
         timestamps=hist.get("timestamps", []) or [],
         return_pct=float(hist.get("return_pct", 0) or 0),
         period_days=days,
+        benchmarks=bench_data,
     )
 
 

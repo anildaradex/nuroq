@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
-  Area, AreaChart, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine,
+  Area, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine,
+  ComposedChart,
 } from "recharts";
 import { Briefcase, RefreshCw, Trash2, TrendingUp, TrendingDown, Wallet, Scale } from "lucide-react";
 import { useState } from "react";
@@ -258,34 +259,72 @@ function StatCard({
 function EquityChart({
   hist, range, setRange, loading,
 }: {
-  hist: { equity_series: number[]; timestamps: number[]; return_pct: number } | undefined;
+  hist: { equity_series: number[]; timestamps: number[]; return_pct: number;
+          benchmarks?: Record<string, { closes: number[]; return_pct: number }> } | undefined;
   range: Range; setRange: (r: Range) => void; loading: boolean;
 }) {
-  const series = (hist?.equity_series ?? []).map((v, i) => ({
-    i,
-    equity: v,
-    t: hist?.timestamps?.[i] ? new Date(hist.timestamps[i] * 1000) : null,
-  }));
+  // Normalize ALL three lines (you + SPY + VOO) to "% from period start" so the
+  // $96k equity and the $737 SPY line are visually comparable.
+  const equity = hist?.equity_series ?? [];
+  const equityBase = equity.length ? equity[0] : 0;
+  const benches = hist?.benchmarks ?? {};
+  // Each benchmark gets a normalized series of the same length as the equity.
+  // If lengths differ slightly (Alpaca vs yfinance count of trading days), we
+  // align to the equity's length by trimming/padding from the trailing side.
+  const benchPctBySym: Record<string, number[]> = {};
+  for (const [sym, b] of Object.entries(benches)) {
+    const closes = b.closes || [];
+    if (closes.length < 2) continue;
+    const tail = closes.slice(-equity.length);
+    const b0 = tail[0] || 1;
+    benchPctBySym[sym] = tail.map((c) => (c / b0 - 1) * 100);
+  }
 
-  // Color the curve by whether the period is up or down overall.
+  const series = equity.map((v, i) => {
+    const row: Record<string, number | Date | null> = {
+      i,
+      equity_pct: equityBase ? (v / equityBase - 1) * 100 : 0,
+      t: hist?.timestamps?.[i] ? new Date(hist.timestamps[i] * 1000) : null,
+    };
+    for (const sym of Object.keys(benchPctBySym)) {
+      row[sym] = benchPctBySym[sym][i] ?? null;
+    }
+    return row;
+  });
+
   const up = (hist?.return_pct ?? 0) >= 0;
   const stroke = up ? "#1a8348" : "#ef4444";
-  const baseline = series.length ? series[0].equity : 0;
+  // Distinct colors that read against the green/red filled area.
+  const benchColors: Record<string, string> = { SPY: "#2563eb", VOO: "#a855f7" };
+  const benchSyms = Object.keys(benchPctBySym);
 
   const fmtAxisDate = (i: number) => {
-    const t = series[i]?.t;
+    const t = series[i]?.t as Date | null;
     return t ? t.toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "";
   };
 
   return (
     <div className="card card-tight">
-      <div className="flex items-center gap-2 mb-2">
-        <span className="text-xs font-semibold opacity-80">Portfolio Performance</span>
-        {hist && (
-          <span className={cn("text-xs font-mono font-bold", up ? "text-buy" : "text-sell")}>
-            {fmtPct(hist.return_pct)}
-          </span>
-        )}
+      <div className="flex items-center gap-2 mb-2 flex-wrap">
+        <span className="text-xs font-semibold opacity-80">Portfolio vs Benchmarks</span>
+        {/* Legend chips — show return % for each line. The user's first. */}
+        <span className={cn("text-xxs font-mono font-bold flex items-center gap-1",
+                            up ? "text-buy" : "text-sell")}>
+          <span className="w-2 h-2 rounded-full inline-block" style={{ background: stroke }} />
+          YOU {fmtPct(hist?.return_pct ?? 0)}
+        </span>
+        {benchSyms.map((sym) => {
+          const ret = benches[sym]?.return_pct ?? 0;
+          const color = benchColors[sym] ?? "#64748b";
+          const positive = ret >= 0;
+          return (
+            <span key={sym} className="text-xxs font-mono flex items-center gap-1">
+              <span className="w-2 h-2 rounded-full inline-block" style={{ background: color }} />
+              <span className="opacity-80">{sym}</span>
+              <span className={positive ? "text-buy" : "text-sell"}>{fmtPct(ret)}</span>
+            </span>
+          );
+        })}
         <div className="flex-1" />
         {/* Range selector */}
         <div className="flex border border-zinc-300 dark:border-zinc-700 rounded overflow-hidden">
@@ -311,7 +350,7 @@ function EquityChart({
           </div>
         ) : (
           <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={series} margin={{ top: 8, right: 8, bottom: 4, left: 0 }}>
+            <ComposedChart data={series} margin={{ top: 8, right: 8, bottom: 4, left: 0 }}>
               <defs>
                 <linearGradient id="equity-fill" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="0%"   stopColor={stroke} stopOpacity={0.28} />
@@ -327,10 +366,10 @@ function EquityChart({
               />
               <YAxis
                 domain={["dataMin", "dataMax"]}
-                tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`}
+                tickFormatter={(v) => `${v >= 0 ? "+" : ""}${(v as number).toFixed(1)}%`}
                 tick={{ fontSize: 10, fill: "currentColor", opacity: 0.55 }}
                 stroke="currentColor" strokeOpacity={0.15}
-                width={48}
+                width={52}
               />
               <Tooltip
                 contentStyle={{
@@ -339,27 +378,45 @@ function EquityChart({
                 }}
                 labelStyle={{ color: "#9ca3af", marginBottom: 2 }}
                 labelFormatter={(i) => {
-                  const t = series[i as number]?.t;
+                  const t = series[i as number]?.t as Date | null;
                   return t ? t.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" }) : "";
                 }}
-                formatter={(v) => [typeof v === "number" ? fmtUSD(v) : String(v), "Equity"]}
+                formatter={(v, name) => {
+                  const num = typeof v === "number" ? v : 0;
+                  const label = name === "equity_pct" ? "YOU" : String(name);
+                  return [`${num >= 0 ? "+" : ""}${num.toFixed(2)}%`, label];
+                }}
               />
-              {baseline > 0 && (
-                <ReferenceLine y={baseline} stroke="currentColor" strokeOpacity={0.25}
-                  strokeDasharray="4 4" />
-              )}
+              {/* Zero line — the period start (everyone starts at 0%). */}
+              <ReferenceLine y={0} stroke="currentColor" strokeOpacity={0.30}
+                strokeDasharray="4 4" />
+              {/* The user's equity — filled area in green/red. */}
               <Area
-                type="monotone" dataKey="equity"
+                type="monotone" dataKey="equity_pct"
                 stroke={stroke} strokeWidth={2}
                 fill="url(#equity-fill)" dot={false}
                 isAnimationActive={true} animationDuration={500}
               />
-            </AreaChart>
+              {/* Benchmarks — thin lines, no fill, dashed pattern so they don't
+                  fight visually with the user's filled curve. */}
+              {benchSyms.map((sym) => (
+                <Line
+                  key={sym}
+                  type="monotone" dataKey={sym}
+                  stroke={benchColors[sym] ?? "#64748b"}
+                  strokeWidth={1.5} strokeDasharray="5 3"
+                  dot={false} isAnimationActive={false}
+                  connectNulls
+                />
+              ))}
+            </ComposedChart>
           </ResponsiveContainer>
         )}
       </div>
       <div className="text-xxs opacity-40 mt-1 text-right">
-        Account equity over {range} days · dashed line = period start
+        {benchSyms.length > 0
+          ? `% return over ${range} days · YOU vs ${benchSyms.join(" / ")} · dashed line = period start`
+          : `Account equity over ${range} days · dashed line = period start`}
       </div>
     </div>
   );
