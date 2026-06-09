@@ -73,8 +73,25 @@ export function TodayA({ acct, history, cards, nextActions, feed, orders, portfo
           </div>
         )}
         {history && (
-          <div className="absolute top-3 right-4 text-xxs font-mono opacity-50">
-            30d · {history.return_pct >= 0 ? "+" : ""}{history.return_pct.toFixed(2)}%
+          <div className="absolute top-3 right-4 z-20 text-xxs font-mono flex flex-col items-end gap-0.5">
+            {/* Backdrop-blurred pills so they stay readable over the giant
+                P&L number when viewport gets narrow. */}
+            <span className="opacity-70 px-1.5 py-0.5 rounded
+                             bg-white/80 dark:bg-zinc-950/80 backdrop-blur-sm">
+              30d · {history.return_pct >= 0 ? "+" : ""}{history.return_pct.toFixed(2)}%
+            </span>
+            {history.benchmarks?.SPY && (() => {
+              const delta = history.return_pct - history.benchmarks.SPY.return_pct;
+              const beating = delta >= 0;
+              return (
+                <span className={cn(
+                  "px-1.5 py-0.5 rounded bg-white/80 dark:bg-zinc-950/80 backdrop-blur-sm font-semibold",
+                  beating ? "text-buy" : "text-sell"
+                )}>
+                  vs SPY · {delta >= 0 ? "+" : ""}{delta.toFixed(2)}pp
+                </span>
+              );
+            })()}
           </div>
         )}
       </div>
