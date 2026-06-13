@@ -1,6 +1,54 @@
 # NuroQ — Session Handoff
 
-> **For the next session.** Read this first, then `session.md` (Session 7) for the play-by-play.
+> **For the next session.** Read this first, then `session.md` (Session 8) for the play-by-play.
+>
+> **Date:** 2026-06-13 (end of Session 8 — day-trader v1 built on branch, NOT pushed)
+> **Branch:** worktree branch `claude/lucid-bardeen-5bb155` (off `feat/algo-claude-improvements`). `main` deploys still trigger on push. **Nothing pushed yet** — the day-trader build is staged but `dt_mode` defaults to `disabled`, so even if pushed it would not auto-activate.
+>
+> ## ⚡ Session 8 — day-trader v1 (NEW, default-disabled)
+>
+> Re-architected day trading because the swing-rubric crossing logic (BUY_CROSSING_THRESHOLD=65 on the 100-pt score) almost never fires intraday — by design, that's a 1-2/week signal. Built a **parallel intraday brain**:
+>
+> - **`day_trader.py`** — ORB-5 strategy + `DayTraderEngine` live wrapper. Mode = disabled | shadow | approve | auto. Default: **disabled**.
+> - **`backtest/`** — Simulator, FillModel (5 bps slippage), metrics. **Same Strategy interface as live**, so backtest = live exactly.
+> - **`intraday_indicators.py`** — VWAP, opening range, intraday ATR, reversal candle, bull flag (pure funcs).
+> - **`minute_bars.py`** — 1-min OHLCV fetcher + SQLite cache (`minute_bars` table).
+> - **`agent_config.py`** — extended with 9 `dt_*` knobs (mode, max_concurrent=3, risk_pct=0.5, entry_window_end=14:30, volume_mult=2.0, require_vwap=True, time_stop=30, target_R=2.0, universe).
+> - **`live_agent.py`** — DayTraderEngine wired into `_on_bar` (one extra call). Self-disabling if init fails; never affects swing crossings.
+> - **`backend/api.py`** — `/api/day-trader/status`, `/api/day-trader/mode {mode}`. Config response/update models extended with DT fields.
+> - **143/143 tests** (was 123 → +20).
+>
+> Backtest sanity check (10 mega-caps × 11 days): **without VWAP filter, WR 18%, -$662**; **with VWAP filter + 60-bar time stop, WR 45%, +$246, PF 1.31** on the same fires. Mega-caps are wrong universe (open IS high-vol bar) — algorithm wants small-cap gappers from the premarket scanner.
+>
+> ## Promote when ready
+>
+> 1. `git push origin claude/lucid-bardeen-5bb155:main` (auto-deploys)
+> 2. `curl -X POST -b cookies https://nuroq.nuroquant.com/api/day-trader/mode -d '{"mode":"shadow"}' -H 'Content-Type: application/json'`
+> 3. Watch the Recent Activity feed for `DT_SHADOW_FIRE` rows. After 2 clean sessions → `{"mode":"approve"}` → Telegram-gated. Then `{"mode":"auto"}`.
+> 4. **AUTO requires one more piece**: `DayTraderEngine.submit_fn` is None in this build. AUTO mode logs + warns + falls back to shadow until you wire `alpaca_executor.submit_bracket_order` through `risk_manager.can_enter_trade`. Small follow-up (~30 LOC).
+>
+> ## 🚀 LIVE — three URLs, all paper-trading
+> - **`https://nuroq.nuroquant.com`** — GCE VM (Gemini · Vertex AI). Always on. Production.
+> - **`https://test.nuroquant.com`** — your Mac via Cloudflare Tunnel (Gemma · MLX). Only up when the Mac is on.
+> - **`http://localhost:8000`** — your Mac, direct.
+>
+> **Login:** password seed is `"nuroq"` on first run (per box). UI prompts to change on first login. **API-key auth is GONE** (replaced with session-cookie password login in Session 7). Open the URL, sign in once — 30-day cookie. No `?api_key=` needed anymore.
+>
+> ## Top open items going into Session 9
+> - **Wire DayTraderEngine.submit_fn** — required for AUTO mode. Calls risk_manager.can_enter_trade(...) → alpaca_executor.submit_bracket_order with the deterministic `dt_<date>_<ticker>_<setup>` client_order_id.
+> - **Premarket scanner** (Phase A of the algorithm plan) — biggest remaining piece. Builds the Day Trade Watchlist from gap + premkt-volume + catalyst at 08:30 ET. Without it the engine has no universe = wrong tickers.
+> - **Configuration UI for DT** — backend ready; React panel for `dt_mode` toggle + sliders is one component.
+> - **WebSocket bar-source latency check** — current `MarketStreamer` is WS already; spec'd 5-15s fix may not be needed. Verify.
+> - **Phase 4 trade journal → DPO** — backtest harness now exists, so the last piece is the trade-journal table + LLM-async post-mortem on `llm_queue`.
+>
+> ## Session 7 carry-overs (still open)
+> - **News on local box**: `NewsPoller` still gated behind `BG=1`. Local insights say "no news in last 24h" until split the way Telegram send was.
+> - **Today "Design lab"** cleanup — 4 variants behind a switcher; pick one.
+> - **Persistent Q&A history** — last 3 Q&As are component state, lost on reload.
+> - **InsightBox + vs-SPY pill on Today variants B/C/D** — TodayA only.
+> - **Live trading still OFF**: `NUROQ_LIVE_TRADING=0` everywhere. Don't flip until trade journal + slippage model are in.
+>
+> ## Original Session 7 doc (preserved below)
 >
 > **Date:** 2026-06-08 (end of Session 7)
 > **Branch:** `main` == `feat/algo-claude-improvements` @ `ffba79b`. Default branch is `main`; work can continue on either, **deploys trigger on push to `main`**.

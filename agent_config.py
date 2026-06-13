@@ -46,6 +46,17 @@ CREATE TABLE IF NOT EXISTS agent_config (
     halt_reason           TEXT,
     pending_open_flatten  INTEGER,   -- unix ts when off-hours flatten was queued
     section_475_election_filed INTEGER NOT NULL DEFAULT 0,  -- user acknowledged §475(f) on file
+    -- Day-trader (intraday agent — separate from the swing crossing logic).
+    -- Disabled by default. Promote: disabled → shadow → approve → auto.
+    dt_mode                  TEXT    NOT NULL DEFAULT 'disabled',
+    dt_max_concurrent        INTEGER NOT NULL DEFAULT 3,
+    dt_risk_per_trade_pct    REAL    NOT NULL DEFAULT 0.5,
+    dt_entry_window_end      TEXT    NOT NULL DEFAULT '14:30',
+    dt_volume_multiplier     REAL    NOT NULL DEFAULT 2.0,
+    dt_require_vwap          INTEGER NOT NULL DEFAULT 1,
+    dt_time_stop_bars        INTEGER NOT NULL DEFAULT 30,
+    dt_target_r_multiple     REAL    NOT NULL DEFAULT 2.0,
+    dt_universe              TEXT    NOT NULL DEFAULT '',   -- comma-separated tickers; '' = auto/scanner
     updated_at            INTEGER NOT NULL
 );
 """
@@ -60,6 +71,21 @@ def _migrate(conn):
             "ALTER TABLE agent_config "
             "ADD COLUMN section_475_election_filed INTEGER NOT NULL DEFAULT 0"
         )
+    # Day-trader columns (added in Session 8 — keep this list extensible).
+    dt_columns = [
+        ("dt_mode",                  "TEXT NOT NULL DEFAULT 'disabled'"),
+        ("dt_max_concurrent",        "INTEGER NOT NULL DEFAULT 3"),
+        ("dt_risk_per_trade_pct",    "REAL NOT NULL DEFAULT 0.5"),
+        ("dt_entry_window_end",      "TEXT NOT NULL DEFAULT '14:30'"),
+        ("dt_volume_multiplier",     "REAL NOT NULL DEFAULT 2.0"),
+        ("dt_require_vwap",          "INTEGER NOT NULL DEFAULT 1"),
+        ("dt_time_stop_bars",        "INTEGER NOT NULL DEFAULT 30"),
+        ("dt_target_r_multiple",     "REAL NOT NULL DEFAULT 2.0"),
+        ("dt_universe",              "TEXT NOT NULL DEFAULT ''"),
+    ]
+    for col_name, col_def in dt_columns:
+        if col_name not in cols:
+            conn.execute(f"ALTER TABLE agent_config ADD COLUMN {col_name} {col_def}")
 
 DEFAULTS: dict[str, Any] = {
     "budget":               10000.0,
@@ -75,6 +101,18 @@ DEFAULTS: dict[str, Any] = {
     "halted_at":            None,
     "halt_reason":          None,
     "section_475_election_filed": False,
+    # Day-trader: ALWAYS default to disabled. Operators must explicitly
+    # promote via the UI / /api/day-trader/config. Auto-deploy of new code
+    # must never silently turn the day-trader on.
+    "dt_mode":                  "disabled",
+    "dt_max_concurrent":        3,
+    "dt_risk_per_trade_pct":    0.5,
+    "dt_entry_window_end":      "14:30",
+    "dt_volume_multiplier":     2.0,
+    "dt_require_vwap":          True,
+    "dt_time_stop_bars":        30,
+    "dt_target_r_multiple":     2.0,
+    "dt_universe":              "",
 }
 
 # Whitelist of fields the /api/config update endpoint will accept.
@@ -83,6 +121,11 @@ EDITABLE_KEYS = {
     "entry_window_start", "entry_window_end", "eod_flatten_time",
     "margin_allowed", "auto_trade_enabled", "notify_on_trade",
     "section_475_election_filed",
+    # Day-trader knobs — separate /api/day-trader/config endpoint also uses
+    # this whitelist, so adding here is enough to make a field editable.
+    "dt_mode", "dt_max_concurrent", "dt_risk_per_trade_pct",
+    "dt_entry_window_end", "dt_volume_multiplier", "dt_require_vwap",
+    "dt_time_stop_bars", "dt_target_r_multiple", "dt_universe",
 }
 
 
@@ -142,10 +185,23 @@ def _coerce_store(v: Any) -> Any:
 def _coerce_load(key: str, v: Any) -> Any:
     """DB → Python: 0/1 ints for known bool columns become True/False."""
     bool_keys = {"margin_allowed", "auto_trade_enabled", "notify_on_trade",
-                 "section_475_election_filed"}
+                 "section_475_election_filed", "dt_require_vwap"}
     if key in bool_keys:
         return bool(v) if v is not None else False
     return v
+
+
+_GET_COLUMNS = [
+    "budget", "max_concurrent", "risk_per_trade_pct", "daily_loss_limit_pct",
+    "entry_window_start", "entry_window_end", "eod_flatten_time",
+    "margin_allowed", "auto_trade_enabled", "notify_on_trade",
+    "halted_at", "halt_reason", "pending_open_flatten",
+    "section_475_election_filed",
+    "dt_mode", "dt_max_concurrent", "dt_risk_per_trade_pct",
+    "dt_entry_window_end", "dt_volume_multiplier", "dt_require_vwap",
+    "dt_time_stop_bars", "dt_target_r_multiple", "dt_universe",
+    "updated_at",
+]
 
 
 def get() -> dict:
@@ -153,19 +209,9 @@ def get() -> dict:
     with _conn() as c:
         _seed_if_empty(c)
         row = c.execute(
-            "SELECT budget, max_concurrent, risk_per_trade_pct, daily_loss_limit_pct, "
-            "entry_window_start, entry_window_end, eod_flatten_time, "
-            "margin_allowed, auto_trade_enabled, notify_on_trade, "
-            "halted_at, halt_reason, pending_open_flatten, "
-            "section_475_election_filed, updated_at "
-            "FROM agent_config WHERE id=1"
+            f"SELECT {','.join(_GET_COLUMNS)} FROM agent_config WHERE id=1"
         ).fetchone()
-    keys = ["budget", "max_concurrent", "risk_per_trade_pct", "daily_loss_limit_pct",
-            "entry_window_start", "entry_window_end", "eod_flatten_time",
-            "margin_allowed", "auto_trade_enabled", "notify_on_trade",
-            "halted_at", "halt_reason", "pending_open_flatten",
-            "section_475_election_filed", "updated_at"]
-    return {k: _coerce_load(k, v) for k, v in zip(keys, row)}
+    return {k: _coerce_load(k, v) for k, v in zip(_GET_COLUMNS, row)}
 
 
 def update(**kwargs) -> dict:

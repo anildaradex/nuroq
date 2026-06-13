@@ -1468,6 +1468,17 @@ class AgentConfigResp(BaseModel):
     # user hasn't confirmed the election is on file with the IRS).
     section_475_env_active: bool = False
     section_475_election_filed: bool = False
+    # Day-trader (Session 8): intraday agent, separate from swing crossings.
+    # Defaults: disabled mode, tighter risk/concurrency, 14:30 ET cutoff.
+    dt_mode: str = "disabled"
+    dt_max_concurrent: int = 3
+    dt_risk_per_trade_pct: float = 0.5
+    dt_entry_window_end: str = "14:30"
+    dt_volume_multiplier: float = 2.0
+    dt_require_vwap: bool = True
+    dt_time_stop_bars: int = 30
+    dt_target_r_multiple: float = 2.0
+    dt_universe: str = ""
     updated_at: int
 
 
@@ -1483,6 +1494,16 @@ class AgentConfigUpdateReq(BaseModel):
     auto_trade_enabled: Optional[bool] = None
     notify_on_trade: Optional[bool] = None
     section_475_election_filed: Optional[bool] = None
+    # Day-trader knobs (Session 8)
+    dt_mode: Optional[str] = None
+    dt_max_concurrent: Optional[int] = None
+    dt_risk_per_trade_pct: Optional[float] = None
+    dt_entry_window_end: Optional[str] = None
+    dt_volume_multiplier: Optional[float] = None
+    dt_require_vwap: Optional[bool] = None
+    dt_time_stop_bars: Optional[int] = None
+    dt_target_r_multiple: Optional[float] = None
+    dt_universe: Optional[str] = None
 
 
 def _config_with_env(cfg: dict) -> dict:
@@ -1525,6 +1546,55 @@ def auto_trade_resume():
     """Clear a halt. Does NOT re-enable auto_trade — that's a separate POST
     /api/config so a stale halt → resume doesn't surprise-start trading."""
     cfg = _agent_config.clear_halt()
+    return AgentConfigResp(**_config_with_env(cfg))
+
+
+class DayTraderStatusResp(BaseModel):
+    """Snapshot of the live day-trader engine. Safe to poll at 5-10s; engine
+    state is in-process, no DB hit."""
+    mode: str                          # disabled | shadow | approve | auto
+    session_date: str
+    fires_today: int
+    open_positions: list[str]
+    open_position_count: int
+    universe_size: int
+
+
+@app.get("/api/day-trader/status", response_model=DayTraderStatusResp)
+def day_trader_status():
+    """Day-trader engine snapshot. Returns mode + zeros if the engine isn't
+    initialized in this process (e.g. live agent never started)."""
+    engine = getattr(getattr(getattr(dash, "agent", None), "live_agent", None),
+                     "day_trader", None)
+    if engine is None:
+        return DayTraderStatusResp(
+            mode=_agent_config.get().get("dt_mode", "disabled"),
+            session_date="", fires_today=0, open_positions=[],
+            open_position_count=0, universe_size=0,
+        )
+    s = engine.status()
+    return DayTraderStatusResp(
+        mode=s.get("mode", "disabled"),
+        session_date=s.get("session_date", ""),
+        fires_today=int(s.get("fires_today", 0)),
+        open_positions=list(s.get("open_positions", [])),
+        open_position_count=int(s.get("open_position_count", 0)),
+        universe_size=int(s.get("universe_size", 0)),
+    )
+
+
+class DayTraderModeReq(BaseModel):
+    mode: str   # disabled | shadow | approve | auto
+
+
+@app.post("/api/day-trader/mode", response_model=AgentConfigResp)
+def day_trader_set_mode(req: DayTraderModeReq):
+    """Promote/demote the day-trader mode in one click. Refuses unknown modes."""
+    valid = {"disabled", "shadow", "approve", "auto"}
+    if (req.mode or "").lower() not in valid:
+        raise HTTPException(status_code=400,
+                            detail=f"mode must be one of {sorted(valid)}")
+    cfg = _agent_config.update(dt_mode=req.mode.lower())
     return AgentConfigResp(**_config_with_env(cfg))
 
 

@@ -144,6 +144,22 @@ class LiveAgent:
         self.started_at: Optional[datetime] = None
         self.bars_processed = 0
 
+        # Day-trader engine — default-disabled via agent_config.dt_mode. The
+        # engine reads dt_mode every bar, so flipping the mode in the UI takes
+        # effect within 60s, no agent restart needed. Universe / submit_fn /
+        # notify_fn left as None for now (next iteration: wire to alpaca + tg).
+        try:
+            from day_trader import DayTraderEngine
+            self.day_trader = DayTraderEngine(
+                submit_fn=None,
+                notify_fn=self._dt_notify,
+                live_triggers_log=lambda *a, **kw: live_triggers.log(*a, **kw),
+                logger=self.logger,
+            )
+        except Exception as e:
+            self.day_trader = None
+            self.logger.log(f"⚠️ DayTraderEngine init failed: {e}", level="WARNING")
+
     # ─── lifecycle ────────────────────────────────────────────────────────────
 
     def start(self, force: bool = False) -> str:
@@ -500,9 +516,38 @@ class LiveAgent:
 
             self._check_crossings(state, new_score)
             state.last_score = new_score
+
+            # Day-trader hook — parallel intraday strategy (default-disabled).
+            # Gated INSIDE DayTraderEngine.on_bar by agent_config.dt_mode, so
+            # this call is essentially free when mode == "disabled".
+            if self.day_trader is not None:
+                try:
+                    self.day_trader.on_bar(ticker, bar)
+                except Exception as e:
+                    self.logger.log(
+                        f"⚠️ DayTraderEngine.on_bar [{ticker}] failed: {e}",
+                        level="WARNING",
+                    )
         except Exception as e:
             self.logger.log(f"⚠️ LiveAgent._on_bar [{getattr(bar, 'symbol', '?')}] failed: {e}",
                             level="WARNING")
+
+    def _dt_notify(self, text: str) -> None:
+        """Telegram notify-fn injected into the DayTraderEngine. Uses raw HTTPS
+        so it works regardless of polling state (same pattern as the swing
+        TradeGatekeeper rewrite in Session 7)."""
+        token = os.getenv("TELEGRAM_TOKEN")
+        chat = os.getenv("TELEGRAM_CHAT_ID")
+        if not token or not chat:
+            return
+        try:
+            requests.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={"chat_id": chat, "text": text, "parse_mode": "Markdown"},
+                timeout=5,
+            )
+        except Exception:
+            pass
 
     def _update_intraday(self, state: TickerState, bar) -> None:
         """Updates rolling intraday H/L/V state from the new bar."""

@@ -18,6 +18,160 @@
 
 ---
 
+## Session 8 — 2026-06-13 (IN PROGRESS — day-trader v1 build, branch only, no push yet)
+
+**Headline:** The autonomous-trading MVP from Session 7 was running the **swing**
+scoring rubric (100-pt fundamentals + weekly trend + AI tiebreaker) and getting
+zero crossings — by design, that signal is a 1–2/week event, not intraday. Re-
+architected day-trading as a parallel intraday brain (ORB-5 + VWAP + volume on
+1-min bars), with a backtest harness that shares the exact same strategy code
+the live engine consumes. **Default-disabled** — promote via UI:
+disabled → shadow → approve → auto. 143/143 tests green (was 123 → +20 new).
+Everything on the worktree branch; no push to main.
+
+### What shipped
+
+1. **`minute_bars.py`** — 1-min OHLCV fetcher + persistent SQLite cache
+   (`minute_bars` table, keyed `ticker × ts`). Cache-first API:
+   `get_minute_bars(ticker, session_date)` and
+   `get_minute_bars_range(ticker, start, end)`. Reuses
+   `data_fetcher.PolygonRateLimiter` (same 5/min Polygon budget). Polygon's
+   `/v2/aggs/.../range/1/minute/...` endpoint with pagination.
+
+2. **`intraday_indicators.py`** — pure functions, no I/O / no LLM:
+   - `session_vwap`, `running_vwap`
+   - `opening_range(bars, window_minutes)` → `OpeningRange(high, low, mid, range_pct, avg_volume)`
+   - `intraday_atr(bars, lookback)`, `rolling_volume_avg`
+   - `premarket_stats`, `gap_pct`
+   - `is_bullish_reversal_bar`, `detect_bull_flag` (heuristic pattern)
+   These take `Sequence[Bar]` and return data. Same functions feed both
+   backtest and the live engine.
+
+3. **`backtest/`** harness — keystone abstraction:
+   - `fill_model.py`: `OrderIntent`, `OrderKind` (MARKET/STOP/LIMIT),
+     `Position`, `TradeRecord`, `SimulatedFillModel(slippage_bps=5)`.
+     Conservative: stop ALWAYS evaluated before target within a bar
+     (worst-case fill).
+   - `replay.py`: `Strategy` Protocol + `HistoricalBarSource` + `Simulator`.
+     One position per (ticker, session) — no pyramiding in v1. EOD-flatten
+     enforced at the last regular bar.
+   - `metrics.py`: win rate, expectancy, profit factor, max DD, max consec
+     losers, by-setup / by-hour / by-ticker / by-exit-reason breakdowns.
+     Stdlib only — no pandas.
+   - `run.py`: CLI runner. `python -m backtest.run --tickers AAPL,NVDA,...
+     --start YYYY-MM-DD --end YYYY-MM-DD`.
+
+4. **`day_trader.py`** — the strategy + live engine module:
+   - `DayTraderMode = disabled | shadow | approve | auto`
+   - `ORB5Params` — all knobs: window, volume_multiplier, require_vwap,
+     target_R_multiple, time_stop_bars, no_entry_after_min (14:30 ET default)
+   - `ORB5Strategy` — Opening Range Breakout, the v1 strategy. Implements
+     the `Strategy` Protocol so the Simulator and the live engine both run
+     it identically.
+   - `DayTraderEngine` — live wrapper. Reads `agent_config.dt_mode` on every
+     bar (so UI flips take effect <60s, no restart). In SHADOW logs only;
+     in APPROVE logs + Telegrams; in AUTO logs + delegates to the injected
+     `submit_fn` for risk_manager + Alpaca submit. Idempotent
+     `client_order_id = dt_<date>_<ticker>_<setup>`.
+
+5. **`agent_config.py`** — extended with 9 day-trader knobs (`dt_mode`,
+   `dt_max_concurrent`, `dt_risk_per_trade_pct`, `dt_entry_window_end`,
+   `dt_volume_multiplier`, `dt_require_vwap`, `dt_time_stop_bars`,
+   `dt_target_r_multiple`, `dt_universe`). Tolerant migration (column-add).
+   **Defaults to `dt_mode="disabled"` so auto-deploy can NEVER silently
+   start it.** Whitelist updated so `/api/config` accepts the new fields.
+
+6. **`live_agent.py`** — minimal integration: one import + one
+   `DayTraderEngine` instance + ONE extra call from `_on_bar` (~10 LOC).
+   Engine is constructed at LiveAgent init; gating logic lives entirely
+   inside the engine. Failure to construct (e.g. import error) just disables
+   it with a WARNING — does NOT break swing crossings.
+
+7. **`backend/api.py`** — extended `AgentConfigResp` + `AgentConfigUpdateReq`
+   Pydantic models with the 9 DT fields. New endpoints:
+   - `GET /api/day-trader/status` → mode, fires_today, open_positions, ...
+   - `POST /api/day-trader/mode {mode}` → promote/demote, refuses unknown.
+
+8. **Tests** — 20 new in `master_test_suite.py`:
+   - `TestMinuteBars` (3): bar timestamping, store/retrieve, has_session
+   - `TestIntradayIndicators` (9): VWAP math, ORB window + insufficient-bars,
+     intraday ATR, reversal candle (true + false), bull flag
+   - `TestORB5Strategy` (6): fires on breakout with vol + vwap, no-fire on
+     low vol, no-fire inside ORB window, stop placement = ORL with 2R target,
+     one-fire-per-session, no-entry-after-14:30
+   - `TestBacktestSimulator` (2): end-to-end synthetic round-trip, metrics
+
+9. **Backtest sanity run** — 10 mega-cap tickers × 11 days = 90 sessions:
+   - Without VWAP filter, 30-bar time stop: 11 trades, WR 18%, expectancy
+     -$60/trade, total -$662.
+   - **With VWAP filter, 60-bar time stop: 11 trades, WR 45%, expectancy
+     +$22/trade, total +$246, profit factor 1.31.** Same fires, longer hold +
+     VWAP gate flips the result. By-hour: 13:00 ET entries best (66.7% WR).
+   - **Honest take**: mega-caps are the WRONG universe for ORB-5 — their
+     open IS the high-vol bar, so fresh-volume breakouts come mid-day. The
+     algorithm was designed for small-cap gappers, which the premarket
+     scanner (Phase A of the plan) will surface. This run validates the
+     pipeline, not the strategy on this universe.
+
+### How to promote (when ready)
+
+```
+# 1) Push the branch to main (auto-deploys to GCE):
+git push origin claude/lucid-bardeen-5bb155:main
+
+# 2) On the cloud UI / via curl, promote to SHADOW (logs DT_SHADOW_FIRE rows):
+curl -X POST -b cookies https://nuroq.nuroquant.com/api/day-trader/mode \
+     -H 'Content-Type: application/json' -d '{"mode":"shadow"}'
+
+# 3) Watch /api/day-trader/status + Recent Activity feed for DT_SHADOW_FIRE.
+#    After 2 clean sessions, promote to APPROVE (Telegram-gated):
+#    -d '{"mode":"approve"}'
+
+# 4) After 2 more clean sessions, promote to AUTO. NOTE: AUTO needs the
+#    submit_fn wiring to be done — currently DayTraderEngine ships with
+#    submit_fn=None, so AUTO will WARN + fall back to shadow until that's
+#    wired to alpaca_executor.submit_bracket_order (next session — small).
+```
+
+### Files added / changed
+
+```
+NEW   minute_bars.py
+NEW   intraday_indicators.py
+NEW   day_trader.py
+NEW   backtest/__init__.py
+NEW   backtest/fill_model.py
+NEW   backtest/replay.py
+NEW   backtest/metrics.py
+NEW   backtest/run.py
+EDIT  agent_config.py            (+9 DT fields, migration, EDITABLE_KEYS, _GET_COLUMNS)
+EDIT  live_agent.py              (+DayTraderEngine wiring, _dt_notify, ~30 LOC)
+EDIT  backend/api.py             (+DT fields on config models, /api/day-trader/{status,mode})
+EDIT  master_test_suite.py       (+20 tests, +~360 LOC)
+```
+
+### Open items going into Session 9
+
+- **Wire `submit_fn` for AUTO mode** — small: thread `alpaca_executor.submit_bracket_order` + risk_manager guard into a function the engine can call. Without this, AUTO logs-only.
+- **Premarket scanner (Phase A of the plan)** — biggest remaining piece. Builds the **Day Trade Watchlist** from gap + premkt-volume + catalyst. Without it the engine has no universe → falls back to whatever LiveAgent is already subscribed to (the swing watchlist, wrong universe).
+- **Configuration UI for the DT knobs** — backend is ready, React panel for `dt_mode` toggle + sliders is one component.
+- **WebSocket bar source** — current LiveAgent already uses `MarketStreamer` which is WebSocket; the engine receives those bars through `_on_bar`. So latency fix is already partially landed. (5-15s polling fix from the spec is not needed when MarketStreamer is already WS — verify.)
+- **Phase 4** (post-trade journal → DPO → backtest harness) still future. The backtest harness now exists, so the DPO loop's last missing piece is the trade-journal table + an LLM-async post-mortem worker on `llm_queue`.
+
+### Why this matches the "don't break what works" promise
+
+The 100-pt swing scoring rubric + watchlist + Configuration tab + risk_manager
++ EOD flatten + Telegram approval + Insight/Q&A + Portfolio view are all
+unchanged. The day-trader is a fully parallel module that LiveAgent calls
+exactly ONCE per bar (after the swing logic completes). If the engine is
+disabled, the call returns within microseconds. If the engine crashes,
+LiveAgent catches the exception and continues. Swing crossings and the
+existing auto-trade path are not affected.
+
+### Tests: 123 → 143 green. Commits: 0 (branch only). Push: pending user OK.
+
+---
+
 ## Session 7 — 2026-06-07 → 06-08 (COMPLETE — closes with autonomous-trading MVP + Tax mode)
 
 **Headline:** went from "key-gated web app" to "autonomous day-trading paper

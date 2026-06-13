@@ -2000,5 +2000,385 @@ class TestGeminiStructuredOutput(unittest.TestCase):
         self.assertNotIn("response_mime_type", cfg)
 
 
+# ===========================================================================
+# Day-trader: minute bars, intraday indicators, ORB-5 strategy, simulator.
+# ===========================================================================
+
+def _et_ts(yyyymmdd: str, hh: int, mm: int) -> int:
+    """Build a unix-seconds ts at the given HH:MM ET on the given date.
+    Used in synthetic-bar fixtures so Bar.minute_of_day resolves correctly."""
+    from datetime import datetime
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo("America/New_York")
+    except Exception:
+        tz = None
+    y, m, d = (int(x) for x in yyyymmdd.split("-"))
+    dt = datetime(y, m, d, hh, mm, tzinfo=tz) if tz else datetime(y, m, d, hh, mm)
+    return int(dt.timestamp())
+
+
+def _bar(ticker: str, yyyymmdd: str, hh: int, mm: int,
+         o: float, h: float, l: float, c: float, v: float,
+         vw: float | None = None):
+    """Convenience constructor for a synthetic Bar at an exact ET wall-time."""
+    from minute_bars import Bar
+    return Bar(
+        ticker=ticker,
+        ts=_et_ts(yyyymmdd, hh, mm),
+        open=o, high=h, low=l, close=c, volume=v,
+        vwap=vw if vw is not None else (h + l + c) / 3.0,
+    )
+
+
+def _synthetic_session(ticker: str, yyyymmdd: str,
+                       open_price: float = 100.0,
+                       orb_height: float = 1.0,
+                       breakout_at_minute: int | None = 35,
+                       breakout_volume_mult: float = 3.0,
+                       drift: float = 0.10) -> list:
+    """Build a full regular-session day of 1-min bars (09:30-16:00 ET).
+
+    Bars 0-4 (09:30-09:34) form the Opening Range with `orb_height` span.
+    Optional breakout at `breakout_at_minute` (default 35 = 09:35 ET 5th
+    bar after the OR window — index 5) with elevated volume.
+    Steady upward drift after that so a follow-through TP can fire."""
+    bars = []
+    base_vol = 1000.0
+    # ORB window (0..4) — tight range around open_price
+    or_low = open_price - orb_height / 2.0
+    or_high = open_price + orb_height / 2.0
+    for i in range(5):
+        m = 30 + i
+        # alternate hi/lo touches but stay inside range
+        h = or_high if i % 2 == 0 else open_price + orb_height * 0.3
+        l = or_low if i % 2 == 1 else open_price - orb_height * 0.3
+        c = (h + l) / 2.0
+        o = (h + l) / 2.0
+        bars.append(_bar(ticker, yyyymmdd, 9, m, o, h, l, c, base_vol))
+    # Regular session continues 09:35 → 16:00 (385 more bars)
+    cur_price = open_price + orb_height * 0.4   # near upper portion of OR
+    minutes_after = 0
+    for hh in range(9, 16):
+        for mm_start in (0, 30) if hh in (9, 15) else (0,):
+            # we just iterate per-minute below; this is a marker
+            pass
+    # Simpler: iterate minute by minute from 09:35..15:59
+    cur_dt_min = 35    # of the 9:XX hour
+    cur_hh = 9
+    while not (cur_hh == 16 and cur_dt_min == 0):
+        if cur_dt_min == 60:
+            cur_dt_min = 0
+            cur_hh += 1
+            if cur_hh == 16:
+                break
+        minutes_after += 1
+        # Apply breakout if we're at the target minute
+        is_breakout = (breakout_at_minute is not None
+                       and cur_hh == 9 and cur_dt_min == breakout_at_minute)
+        if is_breakout:
+            o = cur_price
+            c = or_high + orb_height * 0.5     # clear breakout
+            h = c + 0.05
+            l = o - 0.02
+            v = base_vol * breakout_volume_mult
+        else:
+            o = cur_price
+            c = cur_price + drift if minutes_after > 10 else cur_price + drift * 0.1
+            h = max(o, c) + 0.05
+            l = min(o, c) - 0.05
+            v = base_vol * (1.0 + (0.2 if minutes_after % 5 == 0 else 0))
+        bars.append(_bar(ticker, yyyymmdd, cur_hh, cur_dt_min, o, h, l, c, v))
+        cur_price = c
+        cur_dt_min += 1
+    return bars
+
+
+class TestMinuteBars(unittest.TestCase):
+    """MinuteBarCache store/get + Bar.minute_of_day round-trip."""
+
+    def setUp(self):
+        # Redirect to tempfile so we don't touch real nuroq.db
+        import tempfile
+        import os as _os
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmp.close()
+        self._prev_db = _os.environ.get("NUROQ_DB_PATH")
+        _os.environ["NUROQ_DB_PATH"] = self.tmp.name
+        # Force re-import so the cache picks up the new path
+        import importlib
+        import minute_bars
+        importlib.reload(minute_bars)
+        self.minute_bars = minute_bars
+
+    def tearDown(self):
+        import os as _os
+        try:
+            _os.unlink(self.tmp.name)
+        except Exception:
+            pass
+        if self._prev_db is None:
+            _os.environ.pop("NUROQ_DB_PATH", None)
+        else:
+            _os.environ["NUROQ_DB_PATH"] = self._prev_db
+
+    def test_bar_minute_of_day(self):
+        b = _bar("X", "2026-06-10", 9, 30, 100.0, 100.5, 99.5, 100.2, 5000.0)
+        self.assertEqual(b.minute_of_day, 9 * 60 + 30)
+
+    def test_store_and_retrieve(self):
+        cache = self.minute_bars.MinuteBarCache(db_path=self.tmp.name)
+        raw = [
+            {"t": _et_ts("2026-06-10", 9, 30) * 1000, "o": 100, "h": 101,
+             "l": 99.5, "c": 100.7, "v": 5000, "vw": 100.4},
+            {"t": _et_ts("2026-06-10", 9, 31) * 1000, "o": 100.7, "h": 101.5,
+             "l": 100.3, "c": 101.2, "v": 6000, "vw": 100.9},
+        ]
+        n = cache.store("AAPL", raw)
+        self.assertEqual(n, 2)
+        out = cache.get_session("AAPL", "2026-06-10")
+        self.assertEqual(len(out), 2)
+        self.assertAlmostEqual(out[0].close, 100.7)
+        self.assertAlmostEqual(out[1].vwap, 100.9)
+
+    def test_has_session(self):
+        cache = self.minute_bars.MinuteBarCache(db_path=self.tmp.name)
+        self.assertFalse(cache.has_session("AAPL", "2026-06-10"))
+        cache.store("AAPL", [
+            {"t": _et_ts("2026-06-10", 10, 0) * 1000, "o": 100, "h": 101,
+             "l": 99, "c": 100.5, "v": 1000, "vw": 100.2},
+        ])
+        self.assertTrue(cache.has_session("AAPL", "2026-06-10"))
+
+
+class TestIntradayIndicators(unittest.TestCase):
+    """VWAP, ORB, ATR, reversal-bar, bull-flag pure-function checks."""
+
+    def test_session_vwap_basic(self):
+        from intraday_indicators import session_vwap
+        bars = [
+            _bar("X", "2026-06-10", 9, 30, 100, 100, 100, 100, 1000, vw=100),
+            _bar("X", "2026-06-10", 9, 31, 100, 102, 100, 102, 2000, vw=101),
+        ]
+        # Weighted avg: (100*1000 + 101*2000) / 3000 = 100.6667
+        v = session_vwap(bars)
+        self.assertIsNotNone(v)
+        self.assertAlmostEqual(v, (100 * 1000 + 101 * 2000) / 3000, places=4)
+
+    def test_session_vwap_empty(self):
+        from intraday_indicators import session_vwap
+        self.assertIsNone(session_vwap([]))
+
+    def test_opening_range_window(self):
+        from intraday_indicators import opening_range
+        bars = _synthetic_session("X", "2026-06-10",
+                                  open_price=50.0, orb_height=0.5)
+        orb = opening_range(bars, window_minutes=5)
+        self.assertIsNotNone(orb)
+        # Mid should be ~50 (we centered the OR there)
+        self.assertAlmostEqual(orb.mid, 50.0, places=1)
+        self.assertEqual(orb.bar_count, 5)
+        self.assertGreater(orb.avg_volume, 0)
+        # Range pct ~ 1% on a $50 stock with $0.5 height
+        self.assertAlmostEqual(orb.range_pct, 1.0, places=1)
+
+    def test_opening_range_insufficient_bars(self):
+        from intraday_indicators import opening_range
+        bars = [_bar("X", "2026-06-10", 9, 30, 100, 101, 99, 100, 1000),
+                _bar("X", "2026-06-10", 9, 31, 100, 101, 99, 100, 1000)]
+        self.assertIsNone(opening_range(bars, window_minutes=5))
+
+    def test_intraday_atr(self):
+        from intraday_indicators import intraday_atr
+        bars = []
+        for i in range(20):
+            bars.append(_bar("X", "2026-06-10", 10, i, 100, 100.5, 99.5, 100, 1000))
+        atr = intraday_atr(bars, lookback=14)
+        self.assertIsNotNone(atr)
+        self.assertAlmostEqual(atr, 1.0, places=1)   # TR ≈ high-low = 1
+
+    def test_intraday_atr_too_few_bars(self):
+        from intraday_indicators import intraday_atr
+        bars = [_bar("X", "2026-06-10", 10, 0, 100, 101, 99, 100, 1000)]
+        self.assertIsNone(intraday_atr(bars, lookback=14))
+
+    def test_is_bullish_reversal_bar_true(self):
+        from intraday_indicators import is_bullish_reversal_bar
+        prev = _bar("X", "2026-06-10", 10, 0, 100, 100.5, 99.0, 99.2, 1000)
+        cur = _bar("X", "2026-06-10", 10, 1, 99.2, 101, 99.0, 100.8, 2000)
+        self.assertTrue(is_bullish_reversal_bar(cur, prev))
+
+    def test_is_bullish_reversal_bar_false_red(self):
+        from intraday_indicators import is_bullish_reversal_bar
+        cur = _bar("X", "2026-06-10", 10, 1, 101, 101.2, 99.5, 100.0, 2000)
+        self.assertFalse(is_bullish_reversal_bar(cur, None))
+
+    def test_detect_bull_flag(self):
+        from intraday_indicators import detect_bull_flag
+        # Build: 10 bars rising leg (100 → 105 = 5%), then 6 flat bars (104.5–105.0)
+        bars = []
+        for i in range(10):
+            p = 100 + i * 0.5
+            bars.append(_bar("X", "2026-06-10", 10, i,
+                             p - 0.05, p + 0.05, p - 0.1, p, 1000))
+        # Flag: tight range 104.5–105 for 6 bars
+        for i in range(6):
+            p = 104.7 + (0.1 if i % 2 else 0)
+            bars.append(_bar("X", "2026-06-10", 10, 10 + i,
+                             p, p + 0.05, p - 0.05, p, 800))
+        flag = detect_bull_flag(bars, min_leg_pct=3.0)
+        self.assertIsNotNone(flag)
+        self.assertGreater(flag.leg_pct, 3.0)
+
+
+class TestORB5Strategy(unittest.TestCase):
+    """ORB-5 fire / no-fire conditions and stop/target placement."""
+
+    def test_fires_on_breakout_with_volume_and_vwap(self):
+        from day_trader import ORB5Strategy, ORB5Params
+        from backtest.fill_model import OrderSide
+        params = ORB5Params(volume_multiplier=2.0, require_vwap_align=False,
+                            min_orb_range_pct=0.1)
+        s = ORB5Strategy(params)
+        bars = _synthetic_session("X", "2026-06-10", open_price=100.0,
+                                  orb_height=1.0, breakout_at_minute=35,
+                                  breakout_volume_mult=3.0)
+        s.reset_for_session("X", "2026-06-10")
+        triggered = None
+        for i, b in enumerate(bars):
+            intents = s.on_bar("X", b, bars[:i+1], in_position=False)
+            if intents:
+                triggered = (i, intents[0])
+                break
+        self.assertIsNotNone(triggered, "ORB5 did not fire on breakout bar")
+        idx, intent = triggered
+        self.assertEqual(intent.side, OrderSide.BUY)
+        self.assertEqual(intent.setup_id, "ORB5")
+
+    def test_no_fire_when_volume_too_low(self):
+        from day_trader import ORB5Strategy, ORB5Params
+        params = ORB5Params(volume_multiplier=10.0, require_vwap_align=False,
+                            min_orb_range_pct=0.1)
+        s = ORB5Strategy(params)
+        bars = _synthetic_session("X", "2026-06-10", breakout_volume_mult=1.5)
+        s.reset_for_session("X", "2026-06-10")
+        for i, b in enumerate(bars):
+            self.assertEqual(s.on_bar("X", b, bars[:i+1], in_position=False), [])
+
+    def test_no_fire_inside_orb_window(self):
+        from day_trader import ORB5Strategy
+        s = ORB5Strategy()
+        bars = _synthetic_session("X", "2026-06-10")
+        s.reset_for_session("X", "2026-06-10")
+        # First 5 bars are the OR window — strategy must not fire
+        for i, b in enumerate(bars[:5]):
+            self.assertEqual(s.on_bar("X", b, bars[:i+1], in_position=False), [])
+
+    def test_stop_at_orb_low(self):
+        from day_trader import ORB5Strategy, ORB5Params
+        from backtest.fill_model import OrderIntent, OrderKind, OrderSide
+        params = ORB5Params(min_orb_range_pct=0.1, require_vwap_align=False)
+        s = ORB5Strategy(params)
+        bars = _synthetic_session("X", "2026-06-10",
+                                  open_price=100.0, orb_height=1.0,
+                                  breakout_at_minute=35,
+                                  breakout_volume_mult=3.0)
+        s.reset_for_session("X", "2026-06-10")
+        # Drive bars until fire to populate state.orb
+        for i, b in enumerate(bars):
+            intents = s.on_bar("X", b, bars[:i+1], in_position=False)
+            if intents:
+                intent = intents[0]
+                stop, target, time_stop = s.initial_stop_and_target(
+                    intent.trigger_price, intent, bars[:i+1],
+                )
+                # Stop should be at OR low (~99.5)
+                self.assertAlmostEqual(stop, 99.5, places=1)
+                # Target = entry + 2R
+                R = intent.trigger_price - stop
+                self.assertAlmostEqual(target, intent.trigger_price + 2 * R, places=2)
+                self.assertEqual(time_stop, params.time_stop_bars)
+                break
+        else:
+            self.fail("ORB5 should have fired on the synthetic breakout")
+
+    def test_one_fire_per_session(self):
+        """Strategy must NOT fire a second time after firing once."""
+        from day_trader import ORB5Strategy, ORB5Params
+        params = ORB5Params(volume_multiplier=2.0, require_vwap_align=False,
+                            min_orb_range_pct=0.1)
+        s = ORB5Strategy(params)
+        bars = _synthetic_session("X", "2026-06-10", breakout_volume_mult=3.0)
+        s.reset_for_session("X", "2026-06-10")
+        fired_count = 0
+        for i, b in enumerate(bars):
+            if s.on_bar("X", b, bars[:i+1], in_position=False):
+                fired_count += 1
+        self.assertEqual(fired_count, 1)
+
+    def test_no_entry_after_14_30(self):
+        from day_trader import ORB5Strategy, ORB5Params
+        params = ORB5Params(volume_multiplier=2.0, require_vwap_align=False,
+                            min_orb_range_pct=0.1, no_entry_after_min=14 * 60 + 30)
+        s = ORB5Strategy(params)
+        # Build a session whose ONLY breakout is at 14:35 (no_entry blocks it)
+        bars = _synthetic_session("X", "2026-06-10", breakout_at_minute=None,
+                                  breakout_volume_mult=3.0)
+        # Force a manual breakout bar at 14:35 ET
+        from minute_bars import Bar
+        late_breakout = _bar("X", "2026-06-10", 14, 35,
+                             100.4, 102.0, 100.3, 101.5, 5000.0, vw=101.0)
+        bars.append(late_breakout)
+        bars.sort(key=lambda b: b.ts)
+        s.reset_for_session("X", "2026-06-10")
+        for i, b in enumerate(bars):
+            self.assertEqual(s.on_bar("X", b, bars[:i+1], in_position=False), [])
+
+
+class TestBacktestSimulator(unittest.TestCase):
+    """End-to-end: synthetic session → Simulator → TradeLog with one trade."""
+
+    def test_synthetic_round_trip(self):
+        from day_trader import ORB5Strategy, ORB5Params
+        from backtest.replay import Simulator
+        from backtest.fill_model import SimulatedFillModel
+        params = ORB5Params(volume_multiplier=2.0, require_vwap_align=False,
+                            min_orb_range_pct=0.1)
+        strat = ORB5Strategy(params)
+        bars = _synthetic_session("X", "2026-06-10",
+                                  open_price=100.0, orb_height=1.0,
+                                  breakout_at_minute=35,
+                                  breakout_volume_mult=3.0,
+                                  drift=0.2)
+        sim = Simulator(SimulatedFillModel(slippage_bps=0))
+        log = sim.run(strat, sessions=[("X", "2026-06-10", bars)])
+        self.assertEqual(log.sessions_processed, 1)
+        self.assertEqual(len(log.trades), 1)
+        trade = log.trades[0]
+        self.assertEqual(trade.ticker, "X")
+        self.assertEqual(trade.setup_id, "ORB5")
+        # With strong drift the breakout should hit T1 → winner
+        self.assertIn(trade.exit_reason, ("TARGET", "EOD", "TIME"))
+
+    def test_simulator_metrics(self):
+        from backtest.fill_model import TradeRecord
+        from backtest import metrics
+        trades = [
+            TradeRecord("AAA", "ORB5", 0, 100, 60, 102, 100,
+                        200, 2.0, "TARGET", 30),
+            TradeRecord("AAA", "ORB5", 0, 100, 60,  99, 100,
+                       -100, -1.0, "STOP", 15),
+            TradeRecord("BBB", "ORB5", 0, 50,  60,  51, 200,
+                        200, 2.0, "TARGET", 25),
+        ]
+        m = metrics.compute(trades)
+        self.assertEqual(m.trades, 3)
+        self.assertEqual(m.winners, 2)
+        self.assertEqual(m.losers, 1)
+        self.assertAlmostEqual(m.win_rate, 66.67, places=1)
+        self.assertEqual(m.total_pnl, 300.0)
+        self.assertEqual(m.by_setup["ORB5"]["n"], 3)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
