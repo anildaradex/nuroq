@@ -161,7 +161,8 @@ class LiveAlpacaExecutor:
 
     def submit_bracket_order(self, ticker: str, action: str, shares: int,
                              sl: float, tp: float, tif: str = "GTC",
-                             limit_price: float = None):
+                             limit_price: float = None,
+                             client_order_id: Optional[str] = None):
         """
         Submits an entry + stop-loss + take-profit as a single atomic bracket.
 
@@ -173,6 +174,12 @@ class LiveAlpacaExecutor:
         For a long entry (action='buy'): require sl < entry < tp.
         For a short entry (action='sell'): require sl > entry > tp.
         Alpaca brackets require integer share quantity.
+
+        `client_order_id` — optional caller-supplied idempotency key. When the
+        day-trader runs in multiple processes (e.g. Mac shadow alongside cloud
+        auto), passing a deterministic id like `dt_2026-06-15_AAPL_ORB5`
+        prevents duplicate fills: Alpaca rejects the second submission with
+        the same id. When omitted, a random uuid id is generated as before.
         """
         ticker = ticker.upper()
         action_l = action.lower()
@@ -209,7 +216,10 @@ class LiveAlpacaExecutor:
                 "OPG": TimeInForce.OPG, "IOC": TimeInForce.IOC, "FOK": TimeInForce.FOK,
             }
             time_in_force = tif_map.get(tif, TimeInForce.GTC)
-            client_order_id = f"nuroq-br-{uuid.uuid4().hex[:21]}"
+            # Use caller's idempotency id when provided (DT engine passes a
+            # deterministic dt_<date>_<ticker>_<setup>); otherwise random.
+            if not client_order_id:
+                client_order_id = f"nuroq-br-{uuid.uuid4().hex[:21]}"
 
             common = dict(
                 symbol=ticker, qty=shares, side=side, time_in_force=time_in_force,

@@ -2,9 +2,12 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Settings, Save, Loader2, AlertCircle, Power, OctagonX, Eraser, CheckCircle2,
-  Scale, FileWarning,
+  Scale, FileWarning, Zap, Radar,
 } from "lucide-react";
-import { api, type AgentConfig, type AutoTradeStatus } from "../lib/api";
+import {
+  api, type AgentConfig, type AutoTradeStatus, type DayTraderMode,
+  type DayTraderStatus, type DayTraderScanResp,
+} from "../lib/api";
 import { cn, fmtUSD, fmtPct } from "../lib/cn";
 import { haptic } from "../lib/native";
 
@@ -279,6 +282,16 @@ export function ConfigurationView() {
         />
       </Section>
 
+      {/* Day-trader (Session 8) — parallel intraday brain.
+          Mode flips commit immediately via /api/day-trader/mode (no Save dance,
+          because mode = "live operator action"). Knobs use the regular draft +
+          Save flow. The scanner button populates the universe right now. */}
+      <DayTraderPanel
+        draft={draft}
+        setField={setField}
+        liveCfg={cfgQ.data}
+      />
+
       {/* Tax mode (§475 election) — informational, mostly read-only.
           Separates "is the env flag on" (deploy concern) from "have you
           actually filed the election with the IRS" (user concern). Goes
@@ -459,6 +472,221 @@ function Row({
         valueTone === "buy" && "text-buy",
         valueTone === "sell" && "text-sell",
       )}>{value}</div>
+    </div>
+  );
+}
+
+
+// ────────────────────────────────────────────────────────────────────────
+// Day-trader panel (Session 8)
+// ────────────────────────────────────────────────────────────────────────
+//
+// Three columns of operator surface:
+//   1. Live status: mode pill, fires today, open positions, universe size
+//   2. Mode promotion: 4-button row (disabled / shadow / approve / auto).
+//      Commits IMMEDIATELY — mode is high-stakes operator state, not a draft.
+//   3. Universe + scan button + numeric knobs (draft → Save)
+//
+// Mode colors mirror real-world risk:
+//   disabled → grey  · shadow → blue  · approve → amber  · auto → red
+
+const MODE_OPTIONS: { mode: DayTraderMode; label: string; help: string; cls: string }[] = [
+  { mode: "disabled", label: "Disabled", help: "Engine inactive.",
+    cls: "bg-zinc-200 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300" },
+  { mode: "shadow",   label: "Shadow",   help: "Logs would-be fires. Places NO orders.",
+    cls: "bg-blue-100 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300" },
+  { mode: "approve",  label: "Approve",  help: "Telegram approval flow. NO auto orders.",
+    cls: "bg-amber-100 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300" },
+  { mode: "auto",     label: "AUTO",     help: "Risk-gated bracket orders placed automatically.",
+    cls: "bg-red-100 dark:bg-red-950/40 text-red-700 dark:text-red-300" },
+];
+
+function DayTraderPanel({
+  draft, setField, liveCfg,
+}: {
+  draft: AgentConfig;
+  setField: <K extends keyof AgentConfig>(k: K, v: AgentConfig[K]) => void;
+  liveCfg: AgentConfig;
+}) {
+  const qc = useQueryClient();
+  const statusQ = useQuery<DayTraderStatus>({
+    queryKey: ["dt-status"], queryFn: api.dayTraderStatus,
+    refetchInterval: 15_000,
+  });
+  const setMode = useMutation({
+    mutationFn: (m: DayTraderMode) => api.dayTraderSetMode(m),
+    onSuccess: () => {
+      haptic.success();
+      qc.invalidateQueries({ queryKey: ["agent-config"] });
+      qc.invalidateQueries({ queryKey: ["dt-status"] });
+    },
+    onError: () => haptic.error(),
+  });
+  const scan = useMutation<DayTraderScanResp>({
+    mutationFn: () => api.dayTraderScan(),
+    onSuccess: (r) => {
+      haptic.success();
+      // dt_universe is updated server-side — refresh config so the input reflects it.
+      qc.invalidateQueries({ queryKey: ["agent-config"] });
+      qc.invalidateQueries({ queryKey: ["dt-status"] });
+      // Also stuff the new universe into the draft so the user sees it immediately.
+      setField("dt_universe", r.universe);
+    },
+    onError: () => haptic.error(),
+  });
+
+  const liveMode = liveCfg.dt_mode;
+  const s = statusQ.data;
+  const showAutoWarn = liveMode === "auto";
+
+  return (
+    <div className="card card-tight space-y-3">
+      <div className="text-xxs uppercase tracking-wide opacity-50 flex items-center gap-1.5">
+        <Zap className="w-3 h-3" />
+        Day-trader (intraday brain — ORB-5 + VWAP)
+      </div>
+
+      {/* Live status row */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+        <Stat
+          label="Mode"
+          value={(s?.mode ?? liveMode ?? "disabled").toUpperCase()}
+          tone={liveMode === "auto" ? "sell" : liveMode === "disabled" ? undefined : "buy"}
+        />
+        <Stat label="Fires today" value={String(s?.fires_today ?? 0)} />
+        <Stat label="Open DT positions" value={String(s?.open_position_count ?? 0)} />
+        <Stat label="Universe size" value={String(s?.universe_size ?? 0)} />
+      </div>
+
+      {/* Mode promotion buttons — commit immediately. */}
+      <div>
+        <div className="text-xxs uppercase tracking-wide opacity-50 mb-1.5">Mode</div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-1.5">
+          {MODE_OPTIONS.map((o) => (
+            <button
+              key={o.mode}
+              className={cn(
+                "rounded px-2 py-1.5 text-xs font-medium border transition",
+                liveMode === o.mode
+                  ? `${o.cls} border-current`
+                  : "border-zinc-300 dark:border-zinc-700 hover:bg-zinc-50 dark:hover:bg-zinc-900",
+                setMode.isPending && "opacity-50 cursor-wait",
+              )}
+              disabled={setMode.isPending || liveMode === o.mode}
+              onClick={() => { haptic.medium(); setMode.mutate(o.mode); }}
+              title={o.help}
+            >
+              {liveMode === o.mode ? "● " : ""}{o.label}
+            </button>
+          ))}
+        </div>
+        <div className="text-xxs opacity-60 mt-1.5 leading-relaxed">
+          {MODE_OPTIONS.find((o) => o.mode === liveMode)?.help}
+        </div>
+        {showAutoWarn && (
+          <div className="mt-2 flex items-start gap-1.5 text-xxs p-2 rounded
+                          border border-red-300 dark:border-red-900
+                          bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-300">
+            <AlertCircle className="w-3 h-3 mt-0.5 shrink-0" />
+            <div>AUTO mode is live. Bracket orders fire automatically when the
+              risk manager green-lights an ORB-5 breakout. Halt via the main
+              toggle above to stop instantly.</div>
+          </div>
+        )}
+      </div>
+
+      {/* Universe + Scan */}
+      <div>
+        <div className="text-xxs uppercase tracking-wide opacity-50 mb-1.5">Today's universe</div>
+        <div className="flex gap-1.5">
+          <input
+            type="text"
+            value={draft.dt_universe}
+            onChange={(e) => setField("dt_universe", e.target.value)}
+            placeholder="(empty = no universe filter — engine acts on every subscribed ticker)"
+            className="flex-1 px-2 py-1.5 text-xs font-mono rounded border
+                       border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-950"
+          />
+          <button
+            onClick={() => { haptic.medium(); scan.mutate(); }}
+            disabled={scan.isPending}
+            className="btn btn-ghost gap-1"
+            title="Run premarket scanner now: gap + premkt volume + catalyst → top tickers"
+          >
+            {scan.isPending
+              ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              : <Radar className="w-3.5 h-3.5" />}
+            Scan
+          </button>
+        </div>
+        <div className="text-xxs opacity-60 mt-1 leading-relaxed">
+          Comma-separated tickers the day-trader is allowed to act on. The
+          scheduler refreshes this at 08:05 ET via the premarket scanner
+          (gap ≥ 4% × log10(premkt vol) × catalyst). Scan button runs it now.
+        </div>
+        {scan.data && (
+          <div className="text-xxs mt-1.5 p-2 rounded border
+                          border-zinc-200 dark:border-zinc-800
+                          bg-zinc-50 dark:bg-zinc-900/50">
+            Scanned <b>{scan.data.scanned}</b>, kept <b>{scan.data.kept}</b>.
+            {scan.data.rows.length > 0 && (
+              <span className="opacity-70"> Top: {scan.data.rows.slice(0, 3).map((r) =>
+                `${r.ticker} (+${r.gap_pct.toFixed(1)}%)`).join(", ")}</span>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Numeric knobs */}
+      <Section title="Strategy & risk">
+        <NumRow
+          label="DT max concurrent"
+          help="Caps how many day-trades the engine may hold open at once. Independent of the swing max_concurrent."
+          value={draft.dt_max_concurrent} min={1} max={10} step={1}
+          format={(v) => `${v} positions`}
+          onChange={(v) => setField("dt_max_concurrent", v)}
+        />
+        <NumRow
+          label="DT risk per trade"
+          help="Position size = (budget × pct) / per-share-risk. Default 0.5% — tighter than swing because 1-min stops are smaller."
+          value={draft.dt_risk_per_trade_pct} min={0.1} max={5} step={0.1}
+          format={(v) => `${v.toFixed(2)}%`}
+          onChange={(v) => setField("dt_risk_per_trade_pct", v)}
+        />
+        <NumRow
+          label="Breakout volume × ORB avg"
+          help="Bar volume on the breakout bar must be at least this multiple of the opening range's per-bar average."
+          value={draft.dt_volume_multiplier} min={1} max={5} step={0.1}
+          format={(v) => `${v.toFixed(1)}× ORB avg`}
+          onChange={(v) => setField("dt_volume_multiplier", v)}
+        />
+        <NumRow
+          label="Target R-multiple"
+          help="Take profit at entry + R × stop distance. Default 2 — i.e. risk $1 to make $2."
+          value={draft.dt_target_r_multiple} min={1} max={5} step={0.1}
+          format={(v) => `${v.toFixed(1)}R`}
+          onChange={(v) => setField("dt_target_r_multiple", v)}
+        />
+        <NumRow
+          label="Time stop"
+          help="If neither target nor stop hits within this many bars, exit at market. Default 30 (~30 min)."
+          value={draft.dt_time_stop_bars} min={5} max={120} step={5}
+          format={(v) => `${v} bars`}
+          onChange={(v) => setField("dt_time_stop_bars", v)}
+        />
+        <ToggleRow
+          label="Require breakout close > VWAP"
+          help="Only fire if the breakout bar closes above session VWAP (institutional bid alignment)."
+          checked={draft.dt_require_vwap}
+          onChange={(v) => setField("dt_require_vwap", v)}
+        />
+        <TimeRow
+          label="No new DT entries after"
+          help="Last 90 min of session is choppy + leaves no time to manage. Default 14:30 ET."
+          value={draft.dt_entry_window_end}
+          onChange={(v) => setField("dt_entry_window_end", v)}
+        />
+      </Section>
     </div>
   );
 }

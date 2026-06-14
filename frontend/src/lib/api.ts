@@ -305,7 +305,49 @@ export interface AgentConfig {
   /** User acknowledgment that the §475(f) election is actually on file with
    *  the IRS. Mismatching the env var triggers a red warning. */
   section_475_election_filed: boolean;
+  // Day-trader (Session 8) — parallel intraday brain, separate from swing.
+  dt_mode: DayTraderMode;
+  dt_max_concurrent: number;
+  dt_risk_per_trade_pct: number;
+  dt_entry_window_end: string;
+  dt_volume_multiplier: number;
+  dt_require_vwap: boolean;
+  dt_time_stop_bars: number;
+  dt_target_r_multiple: number;
+  dt_universe: string;       // comma-separated tickers; "" = (scanner-built / auto)
   updated_at: number;
+}
+
+export type DayTraderMode = "disabled" | "shadow" | "approve" | "auto";
+
+export interface DayTraderStatus {
+  mode: DayTraderMode;
+  session_date: string;
+  fires_today: number;
+  open_positions: string[];
+  open_position_count: number;
+  universe_size: number;
+}
+
+export interface DayTraderScanRow {
+  ticker: string;
+  prev_close: number;
+  last_premkt_price: number;
+  gap_pct: number;
+  premkt_volume: number;
+  catalyst: string;
+  catalyst_weight: number;
+  gms: number;
+  headline: string;
+}
+
+export interface DayTraderScanResp {
+  session_date: string;
+  scanned: number;
+  kept: number;
+  rows: DayTraderScanRow[];
+  universe: string;
+  filters: Record<string, number>;
 }
 
 export type AgentConfigUpdate = Partial<Omit<AgentConfig, "halted_at" | "halt_reason" | "updated_at">>;
@@ -436,4 +478,9 @@ export const api = {
   scanStatus: () =>
     get<{ running: boolean; rows: unknown[]; summary: string; error: string | null; mode: string | null }>(
       "/api/scan/status"),
+  // Day-trader (Session 8)
+  dayTraderStatus: () => get<DayTraderStatus>("/api/day-trader/status"),
+  dayTraderSetMode: (mode: DayTraderMode) =>
+    post<AgentConfig>("/api/day-trader/mode", { mode }),
+  dayTraderScan: () => post<DayTraderScanResp>("/api/day-trader/scan"),
 };

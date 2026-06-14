@@ -18,7 +18,7 @@
 
 ---
 
-## Session 8 — 2026-06-13 (IN PROGRESS — day-trader v1 build, branch only, no push yet)
+## Session 8 — 2026-06-13 (LIVE-READY — day-trader v1 complete, branch only, no push yet)
 
 **Headline:** The autonomous-trading MVP from Session 7 was running the **swing**
 scoring rubric (100-pt fundamentals + weekly trend + AI tiebreaker) and getting
@@ -26,8 +26,10 @@ zero crossings — by design, that signal is a 1–2/week event, not intraday. R
 architected day-trading as a parallel intraday brain (ORB-5 + VWAP + volume on
 1-min bars), with a backtest harness that shares the exact same strategy code
 the live engine consumes. **Default-disabled** — promote via UI:
-disabled → shadow → approve → auto. 143/143 tests green (was 123 → +20 new).
-Everything on the worktree branch; no push to main.
+disabled → shadow → approve → auto. **AUTO is fully wired** (risk-managed Alpaca
+bracket with idempotent client_order_id). Premarket scanner builds today's DTW
+at 08:05 ET. Configuration UI panel exposes all of it.
+**152/152 tests green** (was 123 → +29 new). Everything on the worktree branch.
 
 ### What shipped
 
@@ -113,6 +115,60 @@ Everything on the worktree branch; no push to main.
      scanner (Phase A of the plan) will surface. This run validates the
      pipeline, not the strategy on this universe.
 
+### Wave 2 (later same session) — live-ready additions
+
+10. **`risk_manager.can_enter_dt_trade()`** — DT-aware gate. Same shape as
+    swing's `can_enter_trade()` but reads `dt_mode` (must be "auto"),
+    `dt_entry_window_end` (default 14:30 ET), `dt_max_concurrent`,
+    `dt_risk_per_trade_pct`. Sizes from the strategy's stop, NOT from
+    daily ATR. Shares the daily-loss circuit breaker with the swing brain.
+
+11. **`alpaca_executor.submit_bracket_order(..., client_order_id=None)`** —
+    optional caller-supplied idempotency key. Pass
+    `dt_<date>_<ticker>_<setup>` and Alpaca will reject duplicate
+    submissions from a second instance with the same id. Free Mac/cloud
+    safety net.
+
+12. **`live_agent._dt_submit`** — the AUTO-mode chokepoint, plumbed as
+    `DayTraderEngine.submit_fn`. Snapshot Alpaca account →
+    `risk_manager.can_enter_dt_trade()` → `submit_bracket_order(client_order_id=...)`.
+    Logs `DT_AUTO_DECLINED`, `DT_AUTO_EXECUTED`, or `DT_AUTO_FAILED` rows to
+    `live_triggers` so the React feed shows the audit trail. Telegram audit
+    when `notify_on_trade` is on.
+
+13. **`premarket_scanner.py`** — `build_dt_universe()`:
+    - Candidates: `watchlist_today` + Alpaca holdings (default seed).
+    - For each: prev close (from `get_full_history`) + premarket bars
+      (from `get_minute_bars`) + news catalyst (from `news_engine`).
+    - Filters: gap ≥ 4%, premkt vol ≥ 50k, price in $1–$500, not NEGATIVE_BLOCK.
+    - Rank by GMS = gap × log10(vol) × catalyst_weight
+      (POSITIVE_BOOST 1.5, NEUTRAL 1.0, NEG_WARNING 0.5, NEG_BLOCK drop).
+    - Writes top N to `agent_config.dt_universe`.
+    Pluggable via `candidates=` kwarg for tests.
+
+14. **`scheduler.py`** — added third job `("dt_scan", 8, 5, build_dt_universe)`.
+    Runs at 08:05 ET weekdays in-process (cloud) or via launchd on Mac.
+
+15. **`/api/day-trader/scan`** (POST) — manual trigger. Returns
+    `{session_date, scanned, kept, rows[], universe, filters}`. The
+    Configuration UI's "Scan" button hits this and shows the result inline.
+
+16. **React Configuration view — Day-trader panel** (~250 LOC):
+    - Live status row: mode/fires today/open positions/universe size
+    - 4-button mode promoter (disabled / shadow / approve / **AUTO**)
+      — commits IMMEDIATELY on click (mode = operator state, not draft).
+      Big red warning banner when AUTO is live.
+    - Universe text input + **Scan** button (runs the scanner now).
+    - 5 numeric knobs + VWAP toggle + entry-window-end picker (draft → Save).
+    Built bundle: 783 KB total / 227 KB gzipped.
+
+17. **Tests** — 9 more in `master_test_suite.py`:
+    - `TestCanEnterDtTrade` (7): mode≠auto blocks, auto+pass, concurrency
+      cap, entry-window-end, daily loss → halt, halted blocks, invalid
+      stop/entry ordering.
+    - `TestPremarketScanner` (2): ranking + universe write + filter
+      counters; NEGATIVE_BLOCK drops ticker.
+
 ### How to promote (when ready)
 
 ```
@@ -139,24 +195,29 @@ curl -X POST -b cookies https://nuroq.nuroquant.com/api/day-trader/mode \
 NEW   minute_bars.py
 NEW   intraday_indicators.py
 NEW   day_trader.py
+NEW   premarket_scanner.py
 NEW   backtest/__init__.py
 NEW   backtest/fill_model.py
 NEW   backtest/replay.py
 NEW   backtest/metrics.py
 NEW   backtest/run.py
 EDIT  agent_config.py            (+9 DT fields, migration, EDITABLE_KEYS, _GET_COLUMNS)
-EDIT  live_agent.py              (+DayTraderEngine wiring, _dt_notify, ~30 LOC)
-EDIT  backend/api.py             (+DT fields on config models, /api/day-trader/{status,mode})
-EDIT  master_test_suite.py       (+20 tests, +~360 LOC)
+EDIT  risk_manager.py            (+can_enter_dt_trade, ~95 LOC)
+EDIT  alpaca_executor.py         (+client_order_id kwarg on submit_bracket_order)
+EDIT  live_agent.py              (+DayTraderEngine wiring, _dt_notify, _dt_submit, ~150 LOC)
+EDIT  scheduler.py               (no edit needed — wired via api.py startup hook)
+EDIT  backend/api.py             (+DT fields on config models, /api/day-trader/{status,mode,scan})
+EDIT  frontend/src/lib/api.ts    (+DayTraderMode/Status/ScanResp types + 3 methods)
+EDIT  frontend/src/views/ConfigurationView.tsx  (+DayTraderPanel ~250 LOC)
+EDIT  master_test_suite.py       (+29 tests, +~600 LOC)
 ```
 
 ### Open items going into Session 9
 
-- **Wire `submit_fn` for AUTO mode** — small: thread `alpaca_executor.submit_bracket_order` + risk_manager guard into a function the engine can call. Without this, AUTO logs-only.
-- **Premarket scanner (Phase A of the plan)** — biggest remaining piece. Builds the **Day Trade Watchlist** from gap + premkt-volume + catalyst. Without it the engine has no universe → falls back to whatever LiveAgent is already subscribed to (the swing watchlist, wrong universe).
-- **Configuration UI for the DT knobs** — backend is ready, React panel for `dt_mode` toggle + sliders is one component.
-- **WebSocket bar source** — current LiveAgent already uses `MarketStreamer` which is WebSocket; the engine receives those bars through `_on_bar`. So latency fix is already partially landed. (5-15s polling fix from the spec is not needed when MarketStreamer is already WS — verify.)
-- **Phase 4** (post-trade journal → DPO → backtest harness) still future. The backtest harness now exists, so the DPO loop's last missing piece is the trade-journal table + an LLM-async post-mortem worker on `llm_queue`.
+- **WebSocket bar source latency** — `MarketStreamer` already uses Alpaca WS, so the spec'd 5-15s polling fix is moot. Confirm latency is sub-second in a live session.
+- **Phase 4** (post-trade journal → DPO loop) — backtest harness now exists, so the missing piece is a `trade_journal` SQLite table + an LLM-async post-mortem worker on `llm_queue` that turns each DT round-trip into a DPO training row.
+- **Multi-strategy** — only ORB-5 ships. VWAP-pullback and bull-flag are designed in the algorithm doc but not coded yet. Easy to add — they implement the same `Strategy` Protocol and get an `intent.setup_id` of `VWAP_PB` / `FLAG`.
+- **iOS app rebuild** — the React UI changed (Configuration view), so `./scripts/ios.sh` should be re-run to pick up the new panel on the iPhone build.
 
 ### Why this matches the "don't break what works" promise
 

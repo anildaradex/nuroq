@@ -174,6 +174,104 @@ def can_enter_trade(symbol: str, entry: float, atr: float,
     ))
 
 
+# ---------------------------------------------------------------------------
+# Day-trader variant — same shape, reads dt_* config fields, accepts a
+# strategy-supplied stop/target (1-min ATR-based, NOT swing 2×daily-ATR).
+# ---------------------------------------------------------------------------
+
+def can_enter_dt_trade(symbol: str, entry: float, stop: float, target: float,
+                       open_positions: int, cash: float,
+                       todays_pl: float, equity: float,
+                       on_margin: bool) -> Decision:
+    """Gate a day-trader entry. Same chokepoint shape as can_enter_trade but:
+      • Reads `dt_mode` instead of `auto_trade_enabled` (gate must be "auto").
+      • Reads `dt_entry_window_end` (default 14:30 ET) for the cutoff.
+      • Reads `dt_max_concurrent` (default 3) and `dt_risk_per_trade_pct` (0.5).
+      • Accepts a strategy-supplied (stop, target) rather than computing from ATR.
+        The strategy already sized them from 1-min ORB.
+
+    `open_positions` should be the count of DT positions (excluding swing) when
+    the caller can distinguish; if it can't, total open positions is safer.
+    """
+    cfg = agent_config.get()
+    symbol = (symbol or "").upper()
+
+    # 1. Manual halt is shared with the swing path — same halt flag halts both.
+    if cfg.get("halted_at"):
+        return Decision(False, f"halted: {cfg.get('halt_reason') or 'manual'}", None)
+
+    # 2. DT mode must be "auto" to actually place orders.
+    mode = (cfg.get("dt_mode") or "disabled").lower()
+    if mode != "auto":
+        return Decision(False, f"dt_mode={mode} (must be 'auto')", None)
+
+    # 3. Market open
+    now = _now_et()
+    if not _market_open(now):
+        return Decision(False, "market closed", None)
+
+    # 4. Entry window — uses DT-specific end (default 14:30 ET).
+    start = _parse_hhmm(cfg.get("entry_window_start", "09:35"), dtime(9, 35))
+    end = _parse_hhmm(cfg.get("dt_entry_window_end", "14:30"), dtime(14, 30))
+    t = now.time()
+    if not (start <= t < end):
+        return Decision(False,
+                        f"outside DT entry window {cfg.get('entry_window_start','09:35')}–"
+                        f"{cfg.get('dt_entry_window_end','14:30')} ET",
+                        None)
+
+    # 5. Daily loss limit — uses the SHARED daily_loss_limit_pct since the
+    # whole book is one account and one circuit-breaker covers both brains.
+    if equity > 0:
+        loss_pct = -todays_pl / equity * 100 if todays_pl < 0 else 0
+        if loss_pct >= cfg["daily_loss_limit_pct"]:
+            agent_config.halt(
+                f"daily loss limit hit (DT): {loss_pct:.2f}% of equity "
+                f"(limit {cfg['daily_loss_limit_pct']:.2f}%)"
+            )
+            return Decision(False, "daily loss limit", None)
+
+    # 6. DT concurrency cap (separate from swing's max_concurrent).
+    dt_max = int(cfg.get("dt_max_concurrent", 3))
+    if open_positions >= dt_max:
+        return Decision(False,
+                        f"DT concurrency cap: {open_positions}/{dt_max}",
+                        None)
+
+    # 7. Margin policy.
+    if not cfg["margin_allowed"] and (on_margin or cash <= 0):
+        return Decision(False, "margin disabled (cash <= 0)", None)
+
+    # 8 + 9. Sizing — accept strategy stop/target; size by DT risk budget.
+    if entry <= 0 or stop <= 0 or target <= 0:
+        return Decision(False, "invalid entry/stop/target", None)
+    if not (stop < entry < target):
+        return Decision(False, "stop/entry/target ordering invalid", None)
+    per_share_risk = entry - stop
+    if per_share_risk <= 0:
+        return Decision(False, "non-positive per-share risk", None)
+
+    risk_budget = cfg["budget"] * float(cfg.get("dt_risk_per_trade_pct", 0.5)) / 100.0
+    shares_by_risk = int(risk_budget // per_share_risk)
+    per_position_cap = cfg["budget"] / max(1, dt_max)
+    shares_by_size = int(per_position_cap // entry)
+    shares_by_cash = (int(max(0, cash) // entry)
+                      if not cfg["margin_allowed"] else shares_by_size)
+
+    shares = max(0, min(shares_by_risk, shares_by_size, shares_by_cash))
+    if shares < 1:
+        return Decision(False,
+                        f"DT sized to 0 (risk_budget=${risk_budget:.0f}, "
+                        f"per_share_risk=${per_share_risk:.2f}, cash=${cash:.0f})",
+                        None)
+
+    return Decision(True, "ok", Sizing(
+        shares=shares, sl=round(stop, 2), tp=round(target, 2),
+        position_value=round(shares * entry, 2),
+        risk_dollars=round(shares * per_share_risk, 2),
+    ))
+
+
 def trip_circuit_if_loss_exceeded(todays_pl: float, equity: float) -> Tuple[bool, str]:
     """Standalone hook the EOD daemon / monitor can call to enforce the
     daily-loss circuit even when no entry is being attempted. Returns

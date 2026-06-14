@@ -93,9 +93,14 @@ def _start_scheduler() -> None:
         return
     try:
         from scheduler import start_inproc_scheduler
+        from premarket_scanner import build_dt_universe as _dt_scan_job
         _SCHEDULER_JOBS = start_inproc_scheduler([
-            ("research",  3, 30, dash.trigger_research_cycle_async),
-            ("proposals", 8,  0, dash.log_sell_proposals),
+            ("research",   3, 30, dash.trigger_research_cycle_async),
+            ("proposals",  8,  0, dash.log_sell_proposals),
+            # Premarket scanner runs at 08:05 ET (after proposals at 08:00 so
+            # any same-morning research-cycle refresh has settled). Builds
+            # today's DTW and writes dt_universe.
+            ("dt_scan",    8,  5, lambda: _dt_scan_job(logger=dash.logger)),
         ], dash.logger)
     except Exception as e:
         print(f"[scheduler] ⚠️  failed to start: {e}")
@@ -1596,6 +1601,47 @@ def day_trader_set_mode(req: DayTraderModeReq):
                             detail=f"mode must be one of {sorted(valid)}")
     cfg = _agent_config.update(dt_mode=req.mode.lower())
     return AgentConfigResp(**_config_with_env(cfg))
+
+
+class DayTraderScanRow(BaseModel):
+    ticker: str
+    prev_close: float
+    last_premkt_price: float
+    gap_pct: float
+    premkt_volume: int
+    catalyst: str
+    catalyst_weight: float
+    gms: float
+    headline: str = ""
+
+
+class DayTraderScanResp(BaseModel):
+    session_date: str
+    scanned: int
+    kept: int
+    rows: list[DayTraderScanRow]
+    universe: str
+    filters: dict
+
+
+@app.post("/api/day-trader/scan", response_model=DayTraderScanResp)
+def day_trader_scan():
+    """Run the premarket scanner NOW and write dt_universe. Same code path
+    the scheduler runs at 08:05 ET — exposed for manual trigger from the UI.
+    Safe to call any time of day; bars are cached after first fetch."""
+    try:
+        from premarket_scanner import build_dt_universe
+        result = build_dt_universe(logger=dash.logger)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"scanner failed: {e}")
+    return DayTraderScanResp(
+        session_date=result.get("session_date", ""),
+        scanned=int(result.get("scanned", 0)),
+        kept=int(result.get("kept", 0)),
+        rows=[DayTraderScanRow(**r) for r in result.get("rows", [])],
+        universe=str(result.get("universe", "")),
+        filters=dict(result.get("filters", {})),
+    )
 
 
 class FlattenResp(BaseModel):

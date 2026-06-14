@@ -146,12 +146,14 @@ class LiveAgent:
 
         # Day-trader engine — default-disabled via agent_config.dt_mode. The
         # engine reads dt_mode every bar, so flipping the mode in the UI takes
-        # effect within 60s, no agent restart needed. Universe / submit_fn /
-        # notify_fn left as None for now (next iteration: wire to alpaca + tg).
+        # effect within 60s, no agent restart needed.
+        # submit_fn (`_dt_submit`) is the AUTO-mode chokepoint: risk_manager
+        # gate → Alpaca bracket with a deterministic client_order_id. SHADOW
+        # and APPROVE modes never reach it.
         try:
             from day_trader import DayTraderEngine
             self.day_trader = DayTraderEngine(
-                submit_fn=None,
+                submit_fn=self._dt_submit,
                 notify_fn=self._dt_notify,
                 live_triggers_log=lambda *a, **kw: live_triggers.log(*a, **kw),
                 logger=self.logger,
@@ -548,6 +550,127 @@ class LiveAgent:
             )
         except Exception:
             pass
+
+    def _dt_submit(self, *, ticker: str, shares: int, entry: float,
+                   sl: float, tp: float, client_order_id: str,
+                   reason: str, setup_id: str) -> int:
+        """AUTO-mode chokepoint for the day-trader engine.
+
+        Returns the number of shares submitted (>0 = filled or queued), or 0
+        if blocked. The engine treats anything > 0 as "we have a position now"
+        and tracks it until the bracket SL/TP fires server-side or the time
+        stop kicks in.
+
+        Order of operations (each step can return 0 with a logged reason):
+          1. Snapshot Alpaca account (cash, equity, today's P&L, open positions)
+          2. risk_manager.can_enter_dt_trade() — DT gate, sizing
+          3. alpaca.submit_bracket_order with the engine's idempotency id
+
+        Sizing precedence: risk_manager re-sizes from dt_risk_per_trade_pct
+        against the strategy's stop distance; we use THAT count (not the
+        100-share placeholder the strategy emitted).
+        """
+        try:
+            from dashboard import alpaca_api          # lazy: avoids import cycles in tests
+        except Exception as e:
+            live_triggers.log(ticker, "BUY", 0, 0, entry,
+                              action="DT_AUTO_FAILED",
+                              notes=f"dashboard import failed: {e}")
+            return 0
+
+        # ── 1. Account snapshot
+        try:
+            acct = alpaca_api.client.get_account() if alpaca_api._ensure_connection() else None
+        except Exception as e:
+            acct = None
+            self.logger.log(f"⚠️ DT[auto] {ticker}: get_account failed: {e}",
+                            level="WARNING")
+        if acct is None:
+            live_triggers.log(ticker, "BUY", 0, 0, entry,
+                              action="DT_AUTO_DECLINED",
+                              notes="alpaca account unavailable")
+            return 0
+        try:
+            cash = float(acct.cash or 0)
+            equity = float(acct.equity or 0)
+            last_equity = float(getattr(acct, "last_equity", equity) or equity)
+            todays_pl = equity - last_equity
+            on_margin = cash < 0
+        except Exception:
+            cash, equity, todays_pl, on_margin = 0.0, 0.0, 0.0, False
+        try:
+            positions = alpaca_api.list_positions() or []
+            open_count = len(positions)
+        except Exception:
+            open_count = 0
+
+        # ── 2. risk_manager gate
+        import risk_manager
+        decision = risk_manager.can_enter_dt_trade(
+            symbol=ticker, entry=entry, stop=sl, target=tp,
+            open_positions=open_count, cash=cash,
+            todays_pl=todays_pl, equity=equity, on_margin=on_margin,
+        )
+        if not decision.ok or decision.sizing is None:
+            live_triggers.log(ticker, "BUY", 0, 0, entry,
+                              action="DT_AUTO_DECLINED",
+                              notes=f"risk_manager: {decision.reason}")
+            self.logger.log(
+                f"🛑 DT[auto] {ticker} declined by risk_manager: {decision.reason}",
+                level="WARNING",
+            )
+            return 0
+        final_shares = int(decision.sizing.shares)
+        if final_shares < 1:
+            return 0
+
+        # ── 3. Alpaca bracket (idempotent on client_order_id)
+        try:
+            result = alpaca_api.submit_bracket_order(
+                ticker=ticker, action="buy", shares=final_shares,
+                sl=float(decision.sizing.sl), tp=float(decision.sizing.tp),
+                tif="DAY",
+                client_order_id=client_order_id,
+            )
+        except Exception as e:
+            live_triggers.log(ticker, "BUY", 0, 0, entry,
+                              action="DT_AUTO_FAILED",
+                              notes=f"alpaca submit raised: {str(e)[:200]}")
+            self.logger.log(f"⚠️ DT[auto] {ticker} submit raised: {e}",
+                            level="ERROR")
+            return 0
+
+        # submit_bracket_order returns a string status — "✅" prefix on success.
+        if isinstance(result, str) and result.startswith("✅"):
+            live_triggers.log(
+                ticker, "BUY", 0, 0, entry,
+                action="DT_AUTO_EXECUTED",
+                notes=(f"{setup_id} {final_shares} sh @ ~${entry:.2f} "
+                       f"SL ${decision.sizing.sl} TP ${decision.sizing.tp} "
+                       f"risk ${decision.sizing.risk_dollars}"),
+            )
+            self.logger.log(f"🤖 DT[auto] EXECUTED {ticker} — {result}")
+            # Optional Telegram audit if the user has notify_on_trade on.
+            try:
+                import agent_config
+                if agent_config.get().get("notify_on_trade"):
+                    self._dt_notify(
+                        f"🤖 *Day-trader EXECUTED · {ticker}*\n\n"
+                        f"Setup: `{setup_id}`\n"
+                        f"Filled: {final_shares} sh @ ~${entry:.2f}\n"
+                        f"SL ${decision.sizing.sl}    TP ${decision.sizing.tp}\n"
+                        f"Risk: ${decision.sizing.risk_dollars}"
+                    )
+            except Exception:
+                pass
+            return final_shares
+        # Failure path — log Alpaca's message
+        live_triggers.log(ticker, "BUY", 0, 0, entry,
+                          action="DT_AUTO_FAILED",
+                          notes=str(result)[:200])
+        self.logger.log(f"⚠️ DT[auto] {ticker} submit refused: {result}",
+                        level="WARNING")
+        return 0
 
     def _update_intraday(self, state: TickerState, bar) -> None:
         """Updates rolling intraday H/L/V state from the new bar."""

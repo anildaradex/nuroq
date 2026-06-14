@@ -2380,5 +2380,264 @@ class TestBacktestSimulator(unittest.TestCase):
         self.assertEqual(m.by_setup["ORB5"]["n"], 3)
 
 
+# ===========================================================================
+# Day-trader: risk_manager.can_enter_dt_trade gate + premarket_scanner ranking
+# ===========================================================================
+
+class TestCanEnterDtTrade(unittest.TestCase):
+    """Verify the DT-aware risk gate accepts/rejects the right inputs.
+    Uses a tempfile DB so we can mutate agent_config freely without polluting
+    the real one."""
+
+    def setUp(self):
+        import tempfile
+        import os as _os
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmp.close()
+        self._prev_db = _os.environ.get("NUROQ_DB_PATH")
+        _os.environ["NUROQ_DB_PATH"] = self.tmp.name
+        import importlib
+        import agent_config
+        import risk_manager
+        importlib.reload(agent_config)
+        importlib.reload(risk_manager)
+        self.agent_config = agent_config
+        self.risk_manager = risk_manager
+        # Pretend market is open + inside DT window so gates 3/4 always pass.
+        from datetime import datetime, time as _t
+        try:
+            from zoneinfo import ZoneInfo
+            self._tz = ZoneInfo("America/New_York")
+        except Exception:
+            self._tz = None
+        self._stub_now = datetime(2026, 6, 15, 10, 0, tzinfo=self._tz) \
+                         if self._tz else datetime(2026, 6, 15, 10, 0)
+        self._orig_now_et = self.risk_manager._now_et
+        self._orig_market_open = self.risk_manager._market_open
+        self.risk_manager._now_et = lambda: self._stub_now
+        self.risk_manager._market_open = lambda _now: True
+
+    def tearDown(self):
+        import os as _os
+        self.risk_manager._now_et = self._orig_now_et
+        self.risk_manager._market_open = self._orig_market_open
+        try:
+            _os.unlink(self.tmp.name)
+        except Exception:
+            pass
+        if self._prev_db is None:
+            _os.environ.pop("NUROQ_DB_PATH", None)
+        else:
+            _os.environ["NUROQ_DB_PATH"] = self._prev_db
+
+    def _ok_args(self, **over):
+        d = dict(symbol="AAPL", entry=100.0, stop=99.0, target=102.0,
+                 open_positions=0, cash=50000.0, todays_pl=0.0,
+                 equity=50000.0, on_margin=False)
+        d.update(over)
+        return d
+
+    def test_blocked_when_mode_not_auto(self):
+        # default is "disabled"
+        d = self.risk_manager.can_enter_dt_trade(**self._ok_args())
+        self.assertFalse(d.ok)
+        self.assertIn("dt_mode=disabled", d.reason)
+        self.agent_config.update(dt_mode="shadow")
+        d = self.risk_manager.can_enter_dt_trade(**self._ok_args())
+        self.assertFalse(d.ok)
+        self.assertIn("dt_mode=shadow", d.reason)
+
+    def test_allowed_when_mode_auto_and_gates_pass(self):
+        self.agent_config.update(dt_mode="auto")
+        d = self.risk_manager.can_enter_dt_trade(**self._ok_args())
+        self.assertTrue(d.ok, d.reason)
+        self.assertIsNotNone(d.sizing)
+        # Sizing should be > 0
+        self.assertGreater(d.sizing.shares, 0)
+        # Per-share risk = 1, dt_risk_per_trade_pct=0.5%, budget=10000
+        # so shares_by_risk = (10000 * 0.005) / 1 = 50
+        # per_position_cap = 10000/3 ≈ 3333 → shares_by_size = 33
+        # → min = 33
+        self.assertEqual(d.sizing.shares, 33)
+
+    def test_blocked_by_dt_concurrency_cap(self):
+        self.agent_config.update(dt_mode="auto", dt_max_concurrent=2)
+        d = self.risk_manager.can_enter_dt_trade(**self._ok_args(open_positions=2))
+        self.assertFalse(d.ok)
+        self.assertIn("DT concurrency", d.reason)
+
+    def test_blocked_by_dt_entry_window_end(self):
+        self.agent_config.update(dt_mode="auto", dt_entry_window_end="14:30")
+        # Move stub to 15:00 ET — past the window
+        from datetime import datetime as _dt
+        late = _dt(2026, 6, 15, 15, 0, tzinfo=self._tz) if self._tz else _dt(2026, 6, 15, 15, 0)
+        self.risk_manager._now_et = lambda: late
+        d = self.risk_manager.can_enter_dt_trade(**self._ok_args())
+        self.assertFalse(d.ok)
+        self.assertIn("outside DT entry window", d.reason)
+
+    def test_blocked_by_daily_loss_limit(self):
+        self.agent_config.update(dt_mode="auto", daily_loss_limit_pct=2.0)
+        # 3% loss on $50k = $1500 down → trip
+        d = self.risk_manager.can_enter_dt_trade(
+            **self._ok_args(todays_pl=-1500.0, equity=50000.0))
+        self.assertFalse(d.ok)
+        self.assertEqual(d.reason, "daily loss limit")
+        # And confirm halt persisted to config.
+        self.assertIsNotNone(self.agent_config.get().get("halted_at"))
+
+    def test_blocked_when_halted(self):
+        self.agent_config.halt("test halt")
+        self.agent_config.update(dt_mode="auto")
+        d = self.risk_manager.can_enter_dt_trade(**self._ok_args())
+        self.assertFalse(d.ok)
+        self.assertTrue(d.reason.startswith("halted:"))
+
+    def test_blocked_by_invalid_ordering(self):
+        self.agent_config.update(dt_mode="auto")
+        d = self.risk_manager.can_enter_dt_trade(
+            **self._ok_args(stop=101.0, target=103.0))  # stop > entry
+        self.assertFalse(d.ok)
+        self.assertIn("ordering invalid", d.reason)
+
+
+class TestPremarketScanner(unittest.TestCase):
+    """Premarket scanner ranking + filter gates. Mocks data sources so this
+    runs offline."""
+
+    def setUp(self):
+        import tempfile
+        import os as _os
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmp.close()
+        self._prev_db = _os.environ.get("NUROQ_DB_PATH")
+        _os.environ["NUROQ_DB_PATH"] = self.tmp.name
+        import importlib
+        import agent_config
+        import minute_bars
+        import premarket_scanner
+        importlib.reload(agent_config)
+        importlib.reload(minute_bars)
+        importlib.reload(premarket_scanner)
+        self.scanner = premarket_scanner
+
+    def tearDown(self):
+        import os as _os
+        try:
+            _os.unlink(self.tmp.name)
+        except Exception:
+            pass
+        if self._prev_db is None:
+            _os.environ.pop("NUROQ_DB_PATH", None)
+        else:
+            _os.environ["NUROQ_DB_PATH"] = self._prev_db
+
+    def _premarket_bars(self, ticker, base_price=100.0, vol_per_bar=10_000):
+        """Build a sequence of premarket bars (08:00-09:29 ET) for the ticker."""
+        bars = []
+        for m in range(90):
+            hh = 8 + m // 60
+            mm = m % 60
+            p = base_price + m * 0.01
+            bars.append(_bar(ticker, "2026-06-15", hh, mm,
+                             p, p + 0.05, p - 0.05, p, vol_per_bar))
+        return bars
+
+    def test_ranking_picks_top_n_and_writes_universe(self):
+        # Stub get_full_history → returns yesterday's close
+        # Stub get_minute_bars → returns synthetic premarket
+        # Stub check_news_for_crossing → returns variety
+        history_data = {
+            "GAPPER1": [{"c": 100.0}, {"c": 100.0}],  # prev close 100
+            "GAPPER2": [{"c": 50.0},  {"c": 50.0}],   # prev close 50
+            "FLAT":    [{"c": 100.0}, {"c": 100.0}],
+            "DEAD":    [{"c": 100.0}, {"c": 100.0}],
+        }
+        # GAPPER1: +5% gap, high vol, POSITIVE_BOOST → highest GMS
+        # GAPPER2: +6% gap, modest vol, NEUTRAL_NEWS  → middle GMS
+        # FLAT:    +0% gap                            → filtered (gap_too_small)
+        # DEAD:    +5% gap, premkt vol < 50k          → filtered (premkt_volume)
+        last_prices = {
+            "GAPPER1": 105.0, "GAPPER2": 53.0, "FLAT": 100.0, "DEAD": 105.0,
+        }
+        per_bar_vol = {
+            "GAPPER1": 5_000, "GAPPER2": 2_000, "FLAT": 5_000, "DEAD": 100,
+        }
+        news_table = {
+            "GAPPER1": {"classification": "POSITIVE_BOOST",
+                        "headline": "FDA approval"},
+            "GAPPER2": {"classification": "NEUTRAL_NEWS", "headline": ""},
+            "FLAT":    None,
+            "DEAD":    None,
+        }
+
+        def fake_history(ticker, logger=None):
+            return history_data.get(ticker, [])
+
+        def fake_minute_bars(ticker, session_date, include_premarket=True,
+                             force_refresh=False, logger=None):
+            base = last_prices.get(ticker)
+            if not base:
+                return []
+            vol = per_bar_vol.get(ticker, 1000)
+            # Build bars whose last close = base price
+            bars = self._premarket_bars(ticker, base_price=base - 0.9, vol_per_bar=vol)
+            # Force the last bar's close to EXACTLY base so gap_pct matches
+            last = bars[-1]
+            from minute_bars import Bar
+            bars[-1] = Bar(
+                ticker=last.ticker, ts=last.ts, open=last.open,
+                high=max(last.high, base), low=min(last.low, base - 0.5),
+                close=base, volume=last.volume, vwap=last.vwap,
+            )
+            return bars
+
+        def fake_news(ticker):
+            return news_table.get(ticker)
+
+        with patch.object(self.scanner, "get_minute_bars", side_effect=fake_minute_bars), \
+             patch("data_fetcher.get_full_history", side_effect=fake_history), \
+             patch("news_engine.check_news_for_crossing", side_effect=fake_news):
+            result = self.scanner.build_dt_universe(
+                top_n=2,
+                candidates=["GAPPER1", "GAPPER2", "FLAT", "DEAD"],
+                session_date="2026-06-15",
+            )
+
+        self.assertEqual(result["scanned"], 4)
+        self.assertEqual(result["kept"], 2)
+        # GAPPER1 must rank above GAPPER2 (positive boost + higher volume).
+        self.assertEqual(result["rows"][0]["ticker"], "GAPPER1")
+        self.assertEqual(result["rows"][1]["ticker"], "GAPPER2")
+        # Filters captured the dropped ones.
+        self.assertGreaterEqual(result["filters"]["gap_too_small"], 1)
+        self.assertGreaterEqual(result["filters"]["premkt_volume"], 1)
+        # Universe was written to agent_config.
+        import agent_config
+        self.assertEqual(agent_config.get()["dt_universe"], "GAPPER1,GAPPER2")
+
+    def test_negative_block_drops_ticker(self):
+        history_data = {"BAD": [{"c": 100.0}, {"c": 100.0}]}
+
+        def fake_history(ticker, logger=None):
+            return history_data.get(ticker, [])
+
+        def fake_minute_bars(ticker, session_date, include_premarket=True,
+                             force_refresh=False, logger=None):
+            return self._premarket_bars("BAD", base_price=104.5, vol_per_bar=10_000)
+
+        def fake_news(ticker):
+            return {"classification": "NEGATIVE_BLOCK", "headline": "SEC fraud probe"}
+
+        with patch.object(self.scanner, "get_minute_bars", side_effect=fake_minute_bars), \
+             patch("data_fetcher.get_full_history", side_effect=fake_history), \
+             patch("news_engine.check_news_for_crossing", side_effect=fake_news):
+            result = self.scanner.build_dt_universe(
+                top_n=5, candidates=["BAD"], session_date="2026-06-15",
+            )
+        self.assertEqual(result["kept"], 0)
+        self.assertEqual(result["filters"]["negative_block"], 1)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

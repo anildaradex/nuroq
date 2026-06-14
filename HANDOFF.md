@@ -2,30 +2,43 @@
 
 > **For the next session.** Read this first, then `session.md` (Session 8) for the play-by-play.
 >
-> **Date:** 2026-06-13 (end of Session 8 — day-trader v1 built on branch, NOT pushed)
-> **Branch:** worktree branch `claude/lucid-bardeen-5bb155` (off `feat/algo-claude-improvements`). `main` deploys still trigger on push. **Nothing pushed yet** — the day-trader build is staged but `dt_mode` defaults to `disabled`, so even if pushed it would not auto-activate.
+> **Date:** 2026-06-13 (end of Session 8 — day-trader v1 LIVE-READY on branch, NOT pushed)
+> **Branch:** worktree branch `claude/lucid-bardeen-5bb155` (off `feat/algo-claude-improvements`). `main` deploys still trigger on push. **Nothing pushed yet** — `dt_mode` defaults to `disabled`, so even if pushed it would not auto-activate.
 >
-> ## ⚡ Session 8 — day-trader v1 (NEW, default-disabled)
+> ## ⚡ Session 8 — day-trader v1 (full stack, default-disabled, AUTO wired)
 >
-> Re-architected day trading because the swing-rubric crossing logic (BUY_CROSSING_THRESHOLD=65 on the 100-pt score) almost never fires intraday — by design, that's a 1-2/week signal. Built a **parallel intraday brain**:
+> Re-architected day trading because the swing-rubric crossing logic (BUY_CROSSING_THRESHOLD=65 on the 100-pt score) almost never fires intraday — by design, that's a 1-2/week signal. Built a **parallel intraday brain** end-to-end:
 >
+> **Compute layer**
 > - **`day_trader.py`** — ORB-5 strategy + `DayTraderEngine` live wrapper. Mode = disabled | shadow | approve | auto. Default: **disabled**.
-> - **`backtest/`** — Simulator, FillModel (5 bps slippage), metrics. **Same Strategy interface as live**, so backtest = live exactly.
+> - **`backtest/`** — Simulator, FillModel (5 bps slippage), metrics. Same Strategy interface as live, so backtest = live exactly.
 > - **`intraday_indicators.py`** — VWAP, opening range, intraday ATR, reversal candle, bull flag (pure funcs).
 > - **`minute_bars.py`** — 1-min OHLCV fetcher + SQLite cache (`minute_bars` table).
-> - **`agent_config.py`** — extended with 9 `dt_*` knobs (mode, max_concurrent=3, risk_pct=0.5, entry_window_end=14:30, volume_mult=2.0, require_vwap=True, time_stop=30, target_R=2.0, universe).
-> - **`live_agent.py`** — DayTraderEngine wired into `_on_bar` (one extra call). Self-disabling if init fails; never affects swing crossings.
-> - **`backend/api.py`** — `/api/day-trader/status`, `/api/day-trader/mode {mode}`. Config response/update models extended with DT fields.
-> - **143/143 tests** (was 123 → +20).
+> - **`premarket_scanner.py`** — `build_dt_universe()`: gap + premkt vol + news catalyst → top N → writes `dt_universe`.
 >
-> Backtest sanity check (10 mega-caps × 11 days): **without VWAP filter, WR 18%, -$662**; **with VWAP filter + 60-bar time stop, WR 45%, +$246, PF 1.31** on the same fires. Mega-caps are wrong universe (open IS high-vol bar) — algorithm wants small-cap gappers from the premarket scanner.
+> **Wiring**
+> - **`agent_config.py`** — +9 `dt_*` knobs (mode, max_concurrent=3, risk_pct=0.5, entry_window_end=14:30, vol_mult=2.0, require_vwap=True, time_stop=30, target_R=2.0, universe).
+> - **`risk_manager.can_enter_dt_trade()`** — DT-aware gate. Different auto flag, entry window, sizing budget; shares daily-loss circuit with swing.
+> - **`alpaca_executor.submit_bracket_order(client_order_id=…)`** — optional idempotency key. DT passes `dt_<date>_<ticker>_<setup>` so Mac+cloud can't double-fire the same setup.
+> - **`live_agent._dt_submit`** — AUTO chokepoint: snapshot Alpaca → risk_manager → bracket. Logs `DT_AUTO_{EXECUTED,DECLINED,FAILED}` rows.
+> - **`live_agent._on_bar`** — one extra call to DayTraderEngine. Self-disabling if init fails; never affects swing crossings.
+> - **`scheduler.py`** — added `dt_scan` job at 08:05 ET (after research 03:30, proposals 08:00).
+>
+> **API + UI**
+> - **`/api/day-trader/status`**, **`/api/day-trader/mode`**, **`/api/day-trader/scan`**. Config models extended with DT fields.
+> - **React Configuration view** — new Day-trader panel: live status row, 4-button mode promoter (red warning banner on AUTO), universe + Scan button, 5 numeric knobs + VWAP toggle + entry-window-end picker.
+>
+> **152/152 tests green** (was 123 → +29 new).
+>
+> Backtest sanity check (10 mega-caps × 11 days): without VWAP, WR 18%, -$662; **with VWAP + 60-bar time stop, WR 45%, +$246, PF 1.31** on the same fires. Mega-caps are wrong universe — algorithm wants small-cap gappers, which the premarket scanner now surfaces.
 >
 > ## Promote when ready
 >
-> 1. `git push origin claude/lucid-bardeen-5bb155:main` (auto-deploys)
-> 2. `curl -X POST -b cookies https://nuroq.nuroquant.com/api/day-trader/mode -d '{"mode":"shadow"}' -H 'Content-Type: application/json'`
-> 3. Watch the Recent Activity feed for `DT_SHADOW_FIRE` rows. After 2 clean sessions → `{"mode":"approve"}` → Telegram-gated. Then `{"mode":"auto"}`.
-> 4. **AUTO requires one more piece**: `DayTraderEngine.submit_fn` is None in this build. AUTO mode logs + warns + falls back to shadow until you wire `alpaca_executor.submit_bracket_order` through `risk_manager.can_enter_trade`. Small follow-up (~30 LOC).
+> 1. `git push origin claude/lucid-bardeen-5bb155:main` (auto-deploys via WIF).
+> 2. Open the Configuration view → **Day-trader** panel → click **Shadow**.
+> 3. Watch the Recent Activity feed for `DT_SHADOW_FIRE` rows during regular session. After 2 clean sessions → click **Approve** (Telegram-gated). After 2 more → click **AUTO** (red banner appears).
+> 4. Optional: click **Scan** to populate today's universe immediately, or wait for 08:05 ET auto-scan.
+> 5. Halt via the existing Halt button or `dt_mode=disabled` to stop instantly.
 >
 > ## 🚀 LIVE — three URLs, all paper-trading
 > - **`https://nuroq.nuroquant.com`** — GCE VM (Gemini · Vertex AI). Always on. Production.
