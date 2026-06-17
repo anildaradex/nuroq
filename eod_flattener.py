@@ -10,6 +10,10 @@ suspenders — it's a no-op when there's nothing to close).
 The schedule comes from agent_config.eod_flatten_time. Reads the config
 every loop so changes via /api/config take effect on the next tick without
 a restart.
+
+Session 8 bugfix: the pending_open_flatten branch now clears the flag on
+any clean return (closed=0/queued=0 included), and only Telegrams when
+something actually closed. Previously a stale flag on a flat account looped.
 """
 
 from __future__ import annotations
