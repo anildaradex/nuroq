@@ -1554,6 +1554,17 @@ def auto_trade_resume():
     return AgentConfigResp(**_config_with_env(cfg))
 
 
+@app.post("/api/auto-trade/clear-pending-flatten", response_model=AgentConfigResp)
+def auto_trade_clear_pending_flatten():
+    """Clear a stale `pending_open_flatten` flag manually. Normally the EOD
+    daemon clears this itself after a successful flatten (including the
+    0-positions case as of Session 8). This endpoint is escape-hatch for
+    when an older container's logic is stuck looping the retry."""
+    _agent_config.clear_open_flatten()
+    cfg = _agent_config.get()
+    return AgentConfigResp(**_config_with_env(cfg))
+
+
 class DayTraderStatusResp(BaseModel):
     """Snapshot of the live day-trader engine. Safe to poll at 5-10s; engine
     state is in-process, no DB hit."""

@@ -90,21 +90,31 @@ class EODFlattener:
                 self.logger.log("🧹 Pending-open flatten: market is open — retrying.")
                 try:
                     res = self.alpaca_api.flatten_all_positions()
+                    closed_n = int(res.get("closed_count") or 0)
+                    queued_n = int(res.get("queued_for_open") or 0)
+                    errs = res.get("errors") or []
                     self.logger.log(
-                        f"🧹 Pending-open flatten done: closed {res.get('closed_count')}, "
-                        f"queued {res.get('queued_for_open')}, errors={len(res.get('errors') or [])}."
+                        f"🧹 Pending-open flatten done: closed {closed_n}, "
+                        f"queued {queued_n}, errors={len(errs)}."
                     )
-                    # Only clear the flag on full success (no errors AND something happened).
-                    if not res.get("errors") and (res.get("closed_count") or res.get("queued_for_open")):
+                    # BUGFIX (Session 8): clear the flag whenever flatten
+                    # returns cleanly — including the 0/0 case where the
+                    # account is already flat. The old code only cleared when
+                    # something actually closed, so a stale flag on a flat
+                    # account looped forever, spamming Telegram every minute.
+                    if not errs:
                         agent_config.clear_open_flatten()
-                    try:
-                        from dashboard import gatekeeper
-                        gatekeeper.send_notification(
-                            f"🧹 Auto-retry flatten at open: closed {res.get('closed_count')}, "
-                            f"queued {res.get('queued_for_open')}."
-                        )
-                    except Exception:
-                        pass
+                    # Only notify if something actually happened — a "closed 0,
+                    # queued 0" telegram is just noise.
+                    if not errs and (closed_n or queued_n):
+                        try:
+                            from dashboard import gatekeeper
+                            gatekeeper.send_notification(
+                                f"🧹 Auto-retry flatten at open: closed {closed_n}, "
+                                f"queued {queued_n}."
+                            )
+                        except Exception:
+                            pass
                 except Exception as e:
                     self.logger.log(f"⚠️ Pending-open flatten failed: {e}", level="ERROR")
             return
