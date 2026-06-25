@@ -332,8 +332,31 @@ class LiveAgent:
             hour=0, minute=0, second=0, microsecond=0
         ).timestamp()
 
-        sent = 0
-        skipped = 0
+        # AUTO branch detection: when auto_trade_enabled is on (and not halted),
+        # session-open BUY refreshes route through the SAME auto-execute path
+        # crossings use (risk_manager → bracket). No EXECUTE/Dismiss buttons,
+        # no human approval. The risk_manager's concurrency cap + sizing rules
+        # still gate each one, so a runaway "auto-buy all 19 BUYs at open"
+        # can't happen — only the first max_concurrent fit, the rest get
+        # AUTO_DECLINED with the cap reason. Held-ticker + wash-sale checks
+        # are added here because crossings' _handle_buy_crossing applies them
+        # too but _try_auto_trade itself does not.
+        auto_mode = False
+        try:
+            import agent_config as _ac
+            _cfg = _ac.get()
+            auto_mode = bool(_cfg.get("auto_trade_enabled")) and not _cfg.get("halted_at")
+        except Exception:
+            pass
+        try:
+            from dashboard import alpaca_api as _alp
+            _held = set(_alp.list_position_symbols() or set())
+        except Exception:
+            _held = set()
+
+        sent = 0          # approval-style Telegrams sent
+        auto_done = 0     # AUTO routed (executed OR declined inside _try_auto_trade)
+        skipped = 0       # already sent today (idempotency)
         for r in buys:
             ticker = r["ticker"].upper()
 
@@ -383,6 +406,70 @@ class LiveAgent:
             chg_str = f"{'+' if chg >= 0 else ''}{chg:.2f}%"
             qs = r.get("quant_score") or 0
             ai = r.get("ai_score") or 0
+
+            # ── AUTO branch: route through risk_manager → bracket, then mark
+            #    the idempotency sentinel and skip the approval Telegram.
+            if auto_mode:
+                # Held-ticker guard — don't auto-add to a position we already own.
+                if ticker in _held:
+                    try:
+                        with sqlite3.connect(live_triggers.db_path) as conn:
+                            conn.execute(
+                                "INSERT INTO live_triggers (ts, ticker, direction, "
+                                "score_before, score_after, price, action, notes) "
+                                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                                (datetime.now().timestamp(), ticker, "BUY",
+                                 None, None, price, "REFRESH_BUY",
+                                 "AUTO skipped: already held"),
+                            )
+                    except Exception:
+                        pass
+                    auto_done += 1
+                    continue
+                # Wash-sale guard — same as crossings (Layer 1, §1091).
+                try:
+                    from dashboard import wash_sale_check
+                    ws = wash_sale_check(ticker) or {}
+                    if ws.get("risk"):
+                        with sqlite3.connect(live_triggers.db_path) as conn:
+                            conn.execute(
+                                "INSERT INTO live_triggers (ts, ticker, direction, "
+                                "score_before, score_after, price, action, notes) "
+                                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                                (datetime.now().timestamp(), ticker, "BUY",
+                                 None, None, price, "REFRESH_BUY",
+                                 f"AUTO skipped: wash-sale — {ws.get('hint','')[:120]}"),
+                            )
+                        auto_done += 1
+                        continue
+                except Exception:
+                    pass
+                # Hand off to _try_auto_trade — same path crossings use. It
+                # writes its own AUTO_EXECUTED / AUTO_DECLINED row to the feed.
+                try:
+                    reasoning = (f"Session-open BUY refresh — {ticker} Quant {qs} · "
+                                 f"AI {ai} · ${price:.2f}")
+                    self._try_auto_trade(ticker, price, reasoning)
+                except Exception as e:
+                    self.logger.log(f"  ⚠️ AUTO refresh-BUY for {ticker} failed: {e}",
+                                    level="WARNING")
+                # Mark the REFRESH_BUY idempotency sentinel separately so a
+                # backend restart same day doesn't re-route this ticker.
+                try:
+                    with sqlite3.connect(live_triggers.db_path) as conn:
+                        conn.execute(
+                            "INSERT INTO live_triggers (ts, ticker, direction, "
+                            "score_before, score_after, price, action, notes) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                            (datetime.now().timestamp(), ticker, "BUY",
+                             None, None, price, "REFRESH_BUY",
+                             f"AUTO routed — {shares} sh @ ${price:.2f}"),
+                        )
+                except Exception:
+                    pass
+                auto_done += 1
+                continue
+            # ── End AUTO branch ──────────────────────────────────────────
 
             msg_text = (
                 f"🟢 *BUY READY · {ticker}*\n\n"
@@ -439,7 +526,15 @@ class LiveAgent:
             except Exception as e:
                 self.logger.log(f"  ⚠️ Refresh-BUY exception for {ticker}: {e}", level="WARNING")
 
-        self.logger.log(f"  📱 Refresh-BUY alerts: {sent} sent, {skipped} skipped (already sent today).")
+        if auto_mode:
+            self.logger.log(
+                f"  🤖 Refresh-BUY (AUTO mode): {auto_done} routed through risk_manager, "
+                f"{skipped} skipped (already handled today)."
+            )
+        else:
+            self.logger.log(
+                f"  📱 Refresh-BUY alerts: {sent} sent, {skipped} skipped (already sent today)."
+            )
 
     def stop(self) -> str:
         if not self.is_running:
