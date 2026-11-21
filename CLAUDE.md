@@ -28,10 +28,19 @@ Deeper references when needed: `ARCHITECTURE.md` (system design),
   `session.md`, AND update `HANDOFF.md`'s top section + date.
 - Newest entries go on TOP in both files.
 
-> Note: this is a best-effort convention, not an automatic mechanism. Claude
-> writes these files when it remembers to at action boundaries. For truly
-> automatic stamping, a Stop hook in `.claude/settings.json` can append a
-> timestamp to `session.md` on every turn end (ask the user before adding hooks).
+> Note: `.claude/settings.json` wires two hooks that enforce parts of this:
+> - **`Stop` hook** (`.claude/hooks/stop-heartbeat.sh`) — on every turn end,
+>   updates (not appends) a single `_Last turn: TS_` line directly under the
+>   `## Current session` header in `session.md`. Live activity indicator; does
+>   not accumulate.
+> - **`SessionStart` hook** (`.claude/hooks/session-start-check.sh`) — on new
+>   session start, if the `## Current session` section has >=8 unpromoted
+>   bullets, injects a reminder to promote them into a numbered Session block
+>   BEFORE starting new work. Addresses the risk that raw running notes get
+>   summarized out of the conversation by context compaction mid-session.
+>
+> Writing the meaningful-action bullets themselves is still Claude's job —
+> the hooks only track heartbeat and nag about promotion.
 
 ## What NuroQ is
 

@@ -16,6 +16,17 @@
 > `~/.claude/projects/.../*.jsonl` — but those are uncurated. This file is the
 > curated trail.
 
+## Current session
+
+_Last turn: 2026-11-21 16:34Z_
+
+<!-- Meaningful-action bullets go here as the session progresses. At session
+     end (or on "update handoff"), promote them into a numbered Session block
+     below, clear this section, then update HANDOFF.md.
+     The SessionStart hook warns when >=8 bullets accumulate here unpromoted. -->
+
+- 2026-11-21 — Wired `.claude/settings.json` with two hooks + `.claude/hooks/{stop-heartbeat,session-start-check}.sh`. Stop hook maintains a single `_Last turn: TS_` heartbeat line above (replace-not-append). SessionStart hook injects a reminder when ≥8 unpromoted bullets accumulate here. Updated CLAUDE.md note. Smoke-tested both hooks (0 and 8 bullets).
+
 ---
 
 ## Session 8 — 2026-06-13 (LIVE-READY — day-trader v1 complete, branch only, no push yet)
