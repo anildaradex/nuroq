@@ -436,13 +436,15 @@ function Section({ title, body }: { title: string; body: string }) {
 // price action + news + SEC filings + fundamentals for the loaded ticker.
 function AskBar({ ticker }: { ticker: string }) {
   const [q, setQ] = useState("");
-  const [history, setHistory] = useState<Array<{ q: string; a: string; sources: string[] }>>([]);
+  const [history, setHistory] = useState<
+    Array<{ q: string; a: string; sources: string[]; links: { title: string; url: string }[] }>
+  >([]);
 
   const ask = useMutation({
     mutationFn: (question: string) => api.ask(ticker, question),
     onSuccess: (res, question) => {
       haptic.success();
-      setHistory((h) => [{ q: question, a: res.answer, sources: res.sources }, ...h]);
+      setHistory((h) => [{ q: question, a: res.answer, sources: res.sources, links: res.links ?? [] }, ...h]);
       setQ("");
     },
     onError: () => haptic.error(),
@@ -467,7 +469,7 @@ function AskBar({ ticker }: { ticker: string }) {
       <div className="flex items-center gap-2 mb-2">
         <Sparkles className="w-4 h-4 text-accent" />
         <span className="text-sm font-semibold">Ask AI about {ticker}</span>
-        <span className="text-xxs opacity-50">· grounded in price, news &amp; filings</span>
+        <span className="text-xxs opacity-50">· web search + your price &amp; news data</span>
       </div>
 
       <form onSubmit={submit} className="flex items-center gap-2">
@@ -506,7 +508,7 @@ function AskBar({ ticker }: { ticker: string }) {
       {ask.isPending && (
         <div className="mt-3 flex items-center gap-2 text-xs opacity-70">
           <Loader2 className="w-3.5 h-3.5 animate-spin" />
-          Thinking… (running AI over {ticker}'s data)
+          Searching the web and {ticker}'s data…
         </div>
       )}
 
@@ -526,6 +528,22 @@ function AskBar({ ticker }: { ticker: string }) {
                 <span>{item.q}</span>
               </div>
               <div className="text-xs mt-1.5 leading-relaxed whitespace-pre-wrap">{item.a}</div>
+              {item.links.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mt-2">
+                  {item.links.slice(0, 8).map((l) => (
+                    <a
+                      key={l.url}
+                      href={l.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-2 py-0.5 rounded-md text-xxs border border-zinc-300 dark:border-zinc-700
+                                 hover:bg-accent/10 hover:border-accent transition-colors"
+                    >
+                      {l.title}
+                    </a>
+                  ))}
+                </div>
+              )}
               {item.sources.length > 0 && (
                 <div className="text-xxs opacity-50 mt-1.5">Sources: {item.sources.join(" · ")}</div>
               )}

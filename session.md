@@ -26,6 +26,9 @@ _Last turn: 2026-11-21 16:34Z_
      The SessionStart hook warns when >=8 bullets accumulate here unpromoted. -->
 
 - 2026-11-21 — Wired `.claude/settings.json` with two hooks + `.claude/hooks/{stop-heartbeat,session-start-check}.sh`. Stop hook maintains a single `_Last turn: TS_` heartbeat line above (replace-not-append). SessionStart hook injects a reminder when ≥8 unpromoted bullets accumulate here. Updated CLAUDE.md note. Smoke-tested both hooks (0 and 8 bullets).
+- 2026-11-21 — Committed hooks, pushed, PR #8 merged by user → GCE auto-deploy succeeded (image `v20261121-213611-8037cd2`). Started `nuroq-backend` VM (was TERMINATED) — remember to stop it.
+- 2026-11-21 — Ask-AI upgraded to Gemini + Google Search grounding (`GeminiBackend.search_answer`, `EnsembleAnalyst.web_search_answer`). Was truncating mid-sentence (2.5-flash thinking tokens ate the 1024 output cap) and had no web access. Now: thinking capped at 512, 3072 output, plain-text "Key drivers / What to watch" format, clickable source chips in AnalyzeView. Mac uses Vertex via gcloud ADC even though scoring stays on Gemma. Falls back to the old local-context prompt if Gemini fails; slow live-news + SEC-RAG lookups moved to fallback only (15s → ~8s). 155/155 tests. Verified in browser preview.
+- 2026-11-21 — Added `NUROQ_GEMINI_VERTEX=1` + `GOOGLE_CLOUD_PROJECT=nuroq-prod-anildara` to main checkout `.env` (backup `.env.bak-askai`) and to `.claude/launch.json`.
 
 ---
 

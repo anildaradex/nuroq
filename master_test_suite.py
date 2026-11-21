@@ -1999,6 +1999,58 @@ class TestGeminiStructuredOutput(unittest.TestCase):
         self.assertNotIn("response_schema", cfg)
         self.assertNotIn("response_mime_type", cfg)
 
+    def test_search_answer_enables_google_search_and_dedups_links(self):
+        from types import SimpleNamespace as NS
+        gen, gt, captured = self._stub_genai()
+        gt.Tool = lambda **kw: ("tool", kw)
+        gt.GoogleSearch = lambda: "google_search"
+        gt.ThinkingConfig = lambda **kw: kw
+        web = lambda t, u: NS(web=NS(title=t, uri=u))
+        resp = NS(text="NVDA fell on X.", candidates=[NS(grounding_metadata=NS(grounding_chunks=[
+            web("reuters.com", "https://r/1"), web("reuters.com", "https://r/1"),
+            web("cnbc.com", "https://c/2"), NS(web=None)]))])
+        import sys, google
+        b = self._make_backend(gen, gt)
+        b.client.models.generate_content = lambda **kw: (captured.update(kw), resp)[1]
+        with patch.dict(sys.modules, {"google.genai": gen, "google.genai.types": gt}):
+            google.genai = gen
+            text, links = b.search_answer("why did NVDA move?")
+        cfg = captured["config"]
+        self.assertEqual(text, "NVDA fell on X.")
+        self.assertEqual(cfg["tools"], [("tool", {"google_search": "google_search"})])
+        self.assertEqual(cfg["thinking_config"], {"thinking_budget": 512})
+        self.assertEqual(links, [{"title": "reuters.com", "url": "https://r/1"},
+                                 {"title": "cnbc.com", "url": "https://c/2"}])
+
+
+class TestAskAboutTickerWebSearch(unittest.TestCase):
+    """Ask-AI prefers Gemini+Google Search; falls back to local context on failure."""
+
+    def _run(self, web_side_effect):
+        with patch.object(dashboard.history_cache, "get", return_value=[]), \
+             patch.object(dashboard, "get_fundamentals", return_value={"name": "NVIDIA"}), \
+             patch.object(dashboard, "get_polygon_news", return_value=""), \
+             patch.object(dashboard.rag, "get_grounded_context", return_value=""), \
+             patch.object(dashboard.analyst, "web_search_answer", side_effect=web_side_effect), \
+             patch.object(dashboard.analyst, "analyze", return_value="Local answer about NVDA."):
+            return dashboard.ask_about_ticker("nvda", "Why did NVDA move?")
+
+    def test_web_answer_used_with_links(self):
+        links = [{"title": "reuters.com", "url": "https://r/1"}]
+        r = self._run(lambda p: ("**NVDA** fell after earnings.", links))
+        self.assertEqual(r["answer"], "NVDA fell after earnings.")
+        self.assertEqual(r["links"], links)
+        self.assertEqual(r["sources"][0], "web search")
+        self.assertTrue(r["grounded"])
+
+    def test_falls_back_to_local_when_web_fails(self):
+        def boom(p):
+            raise RuntimeError("no gemini creds")
+        r = self._run(boom)
+        self.assertEqual(r["answer"], "Local answer about NVDA.")
+        self.assertEqual(r["links"], [])
+        self.assertNotIn("web search", r["sources"])
+
 
 # ===========================================================================
 # Day-trader: minute bars, intraday indicators, ORB-5 strategy, simulator.
