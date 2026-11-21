@@ -881,6 +881,7 @@ class AskResp(BaseModel):
     answer: str
     sources: list
     grounded: bool
+    links: list = []
 
 
 @app.post("/api/ask", response_model=AskResp)
@@ -897,7 +898,7 @@ def ask(req: AskReq):
     r = dash.ask_about_ticker(req.ticker, req.question)
     return AskResp(
         ticker=r["ticker"], question=r["question"], answer=r["answer"],
-        sources=r["sources"], grounded=r["grounded"],
+        sources=r["sources"], grounded=r["grounded"], links=r.get("links", []),
     )
 
 

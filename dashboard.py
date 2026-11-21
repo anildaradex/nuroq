@@ -132,6 +132,7 @@ class EnsembleAnalyst:
         # unchanged on a Linux/GCP box. Read once at construction.
         self.backend = os.getenv("NUROQ_AI_BACKEND", "gemma").strip().lower()
         self._remote = None  # lazily-built cloud backend (gemini, …)
+        self._search = None  # Gemini used for web-grounded Ask-AI, even when scoring runs on Gemma
 
     def load_all(self):
         if self.backend == "gemma":
@@ -177,6 +178,17 @@ class EnsembleAnalyst:
                 max_tokens=max_tokens,
             )
         return response
+
+    def web_search_answer(self, prompt):
+        """Google-Search-grounded Gemini answer → (text, links). Raises if Gemini
+        isn't configured (no GEMINI_API_KEY and no NUROQ_GEMINI_VERTEX=1)."""
+        if self._search is None:
+            from analyst_backends import GeminiBackend
+            if isinstance(self._remote, GeminiBackend):
+                self._search = self._remote
+            else:
+                self._search = GeminiBackend()
+        return self._search.search_answer(prompt)
 
     def get_consensus(self, ticker, prompt):
         """Returns the AI analysis directly (Gemma locally, Gemini in the cloud)."""
@@ -2812,39 +2824,89 @@ def ask_about_ticker(ticker: str, question: str) -> dict:
     except Exception as e:
         logger.log(f"⚠️ ask_about_ticker news-cache read failed for {ticker}: {e}", level="WARNING")
 
-    # Bounded live fallback: only if the cache had nothing, and capped at 8s so
-    # a rate-limiter pause can't hang the whole request.
-    if not news_ctx:
-        try:
-            import concurrent.futures as _cf
-            with _cf.ThreadPoolExecutor(max_workers=1) as _ex:
-                fut = _ex.submit(lambda: get_polygon_news(ticker, logger=logger))
-                polly = fut.result(timeout=8)
-            if polly:
-                news_ctx = polly[:1500]
-                sources.append("live news")
-        except Exception:
-            pass  # timeout or error → proceed without live news
+    links = []
 
-    # 4. SEC filing RAG context — best-effort, BOUNDED to 10s. A cold ticker
-    #    triggers a live EDGAR fetch + embedding which can take 30s+. We cap it
-    #    so the chat stays responsive; for "why did it move" questions, news +
-    #    price action carry most of the signal anyway.
-    rag_ctx = ""
+    # 4. Preferred path: Gemini with Google Search grounding. NuroQ's own data is
+    #    supplemental context; the web supplies the "why" (catalysts, dates), so
+    #    the slow live-news and SEC-RAG lookups only run on the fallback path.
+    web_prompt = f"""You are a sharp equity research analyst. Today is {datetime.now().strftime('%Y-%m-%d')}.
+Answer the user's question about {ticker} ({company}). Search the web for the latest news, earnings, analyst actions, guidance and macro/sector drivers relevant to the question. Be specific: name catalysts, dates and numbers.
+
+Format as plain text (no markdown symbols like ** or #):
+- Start with a 1-2 sentence direct answer.
+- Then "Key drivers:" with 3-5 short dash bullets, each with a date where possible.
+- Then "What to watch:" with 1-3 dash bullets (upcoming catalysts / risks).
+Keep it under 250 words. No disclaimers.
+
+Supplemental data from the user's own system (may be a few days stale; prefer fresher web data for current prices):
+{price_ctx}
+{funds_ctx}
+Recent headlines in cache:
+{news_ctx or "(none)"}
+
+Question: {question}"""
+
+    web_answer = ""
     try:
+        web_answer, links = analyst.web_search_answer(web_prompt)
+        web_answer = (web_answer or "").replace("**", "").strip()
+    except Exception as e:
+        logger.log(f"⚠️ ask_about_ticker web search unavailable for {ticker}, using local context: {e}",
+                   level="WARNING")
+
+    if web_answer:
+        answer = web_answer
+        sources = ["web search"] + sources
+        grounded = True
+    else:
+        # 5. Fallback: no web. Bounded live news (8s) if the cache was empty, then
+        #    SEC-filing RAG (10s cap; a cold ticker's EDGAR fetch can take 30s+).
         import concurrent.futures as _cf
-        with _cf.ThreadPoolExecutor(max_workers=1) as _ex:
-            fut = _ex.submit(lambda: rag.get_grounded_context(ticker, query=question))
-            rag_ctx = (fut.result(timeout=10) or "")[:2000]
-        if rag_ctx:
-            sources.append("SEC filings")
+        if not news_ctx:
+            try:
+                with _cf.ThreadPoolExecutor(max_workers=1) as _ex:
+                    polly = _ex.submit(lambda: get_polygon_news(ticker, logger=logger)).result(timeout=8)
+                if polly:
+                    news_ctx = polly[:1500]
+                    sources.append("live news")
+            except Exception:
+                pass
+        rag_ctx = ""
+        try:
+            with _cf.ThreadPoolExecutor(max_workers=1) as _ex:
+                fut = _ex.submit(lambda: rag.get_grounded_context(ticker, query=question))
+                rag_ctx = (fut.result(timeout=10) or "")[:2000]
+            if rag_ctx:
+                sources.append("SEC filings")
+        except Exception:
+            pass
+        grounded = bool(bars or news_ctx or rag_ctx)
+        answer = _ask_from_local_context(ticker, company, question, price_ctx,
+                                         funds_ctx, news_ctx, rag_ctx)
+
+    # Drift guard — reuse the existing detector so an answer about the wrong
+    # company gets flagged rather than silently returned. Returns a reason
+    # string when drift is detected, else None.
+    try:
+        drift_reason = _check_drift_markers(answer, ticker, company)
+        if drift_reason:
+            answer = (f"⚠️ _(Low confidence — possible topic drift: {drift_reason})_\n\n{answer}")
     except Exception:
-        # timeout or error — skip filings, answer from price + news
         pass
 
-    grounded = bool(bars or news_ctx or rag_ctx)
+    return {
+        "ticker": ticker,
+        "question": question,
+        "answer": answer,
+        "sources": sources,
+        "grounded": grounded,
+        "links": links,
+    }
 
-    # 5. Build the Q&A prompt — front-load ticker, demand grounding, forbid drift
+
+def _ask_from_local_context(ticker, company, question, price_ctx, funds_ctx,
+                            news_ctx, rag_ctx) -> str:
+    """Fallback Ask-AI path (no web): answer strictly from NuroQ's cached data."""
     prompt = f"""### Instruction: You are a hedge-fund research analyst answering a specific question about {ticker} ({company}).
 
 Use ONLY the context below. If the context doesn't contain the answer, say so plainly — do NOT invent specifics. Reference {ticker} explicitly. Be concise (3-6 sentences). No preamble, no disclaimers.
@@ -2880,24 +2942,7 @@ FILING / FUNDAMENTAL CONTEXT:
     except Exception as e:
         logger.log(f"⚠️ ask_about_ticker inference failed for {ticker}: {e}", level="ERROR")
         answer = f"Analysis engine error: {e}"
-
-    # Drift guard — reuse the existing detector so an answer about the wrong
-    # company gets flagged rather than silently returned. Returns a reason
-    # string when drift is detected, else None.
-    try:
-        drift_reason = _check_drift_markers(answer, ticker, company)
-        if drift_reason:
-            answer = (f"⚠️ _(Low confidence — possible topic drift: {drift_reason})_\n\n{answer}")
-    except Exception:
-        pass
-
-    return {
-        "ticker": ticker,
-        "question": question,
-        "answer": answer,
-        "sources": sources,
-        "grounded": grounded,
-    }
+    return answer
 
 
 # ─── Portfolio-level Insight + Q&A ─────────────────────────────────────────

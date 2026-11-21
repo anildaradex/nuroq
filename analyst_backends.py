@@ -142,6 +142,41 @@ class GeminiBackend:
             pass
         return text
 
+    def search_answer(self, prompt: str, max_tokens: int = 3072,
+                      thinking_budget: int = 512) -> tuple[str, list[dict]]:
+        """Free-form answer grounded with Google Search. Returns
+        (text, links) where links = [{"title", "url"}, ...] from grounding metadata.
+
+        thinking_budget is capped because 2.5-series thinking tokens count against
+        max_output_tokens and were truncating Ask-AI answers mid-sentence."""
+        from google.genai import types
+
+        cfg = types.GenerateContentConfig(
+            temperature=0.2,
+            max_output_tokens=max_tokens,
+            tools=[types.Tool(google_search=types.GoogleSearch())],
+            thinking_config=types.ThinkingConfig(thinking_budget=thinking_budget),
+        )
+        with self._sem:
+            resp = self.client.models.generate_content(
+                model=self.model, contents=prompt, config=cfg,
+            )
+
+        text = getattr(resp, "text", None) or ""
+        links, seen = [], set()
+        try:
+            cand = (resp.candidates or [None])[0]
+            meta = getattr(cand, "grounding_metadata", None)
+            for chunk in (getattr(meta, "grounding_chunks", None) or []):
+                web = getattr(chunk, "web", None)
+                url = getattr(web, "uri", None)
+                if url and url not in seen:
+                    seen.add(url)
+                    links.append({"title": getattr(web, "title", None) or url, "url": url})
+        except Exception:
+            pass
+        return text, links
+
 
 def make_backend(name: str):
     """Factory: map NUROQ_AI_BACKEND → a backend instance. Raises on unknown."""

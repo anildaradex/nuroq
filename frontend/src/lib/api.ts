@@ -220,6 +220,7 @@ export interface AskResult {
   answer: string;
   sources: string[];
   grounded: boolean;
+  links?: { title: string; url: string }[];
 }
 
 export interface WashSaleRisk {
