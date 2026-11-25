@@ -57,6 +57,8 @@ CREATE TABLE IF NOT EXISTS agent_config (
     dt_time_stop_bars        INTEGER NOT NULL DEFAULT 30,
     dt_target_r_multiple     REAL    NOT NULL DEFAULT 2.0,
     dt_universe              TEXT    NOT NULL DEFAULT '',   -- comma-separated tickers; '' = auto/scanner
+    -- Open-bell swing pipeline (pipeline/). off | notify. Approve/auto come later.
+    open_bell_mode           TEXT    NOT NULL DEFAULT 'notify',
     updated_at            INTEGER NOT NULL
 );
 """
@@ -82,6 +84,7 @@ def _migrate(conn):
         ("dt_time_stop_bars",        "INTEGER NOT NULL DEFAULT 30"),
         ("dt_target_r_multiple",     "REAL NOT NULL DEFAULT 2.0"),
         ("dt_universe",              "TEXT NOT NULL DEFAULT ''"),
+        ("open_bell_mode",           "TEXT NOT NULL DEFAULT 'notify'"),
     ]
     for col_name, col_def in dt_columns:
         if col_name not in cols:
@@ -113,6 +116,7 @@ DEFAULTS: dict[str, Any] = {
     "dt_time_stop_bars":        30,
     "dt_target_r_multiple":     2.0,
     "dt_universe":              "",
+    "open_bell_mode":           "notify",
 }
 
 # Whitelist of fields the /api/config update endpoint will accept.
@@ -126,6 +130,7 @@ EDITABLE_KEYS = {
     "dt_mode", "dt_max_concurrent", "dt_risk_per_trade_pct",
     "dt_entry_window_end", "dt_volume_multiplier", "dt_require_vwap",
     "dt_time_stop_bars", "dt_target_r_multiple", "dt_universe",
+    "open_bell_mode",
 }
 
 
@@ -200,6 +205,7 @@ _GET_COLUMNS = [
     "dt_mode", "dt_max_concurrent", "dt_risk_per_trade_pct",
     "dt_entry_window_end", "dt_volume_multiplier", "dt_require_vwap",
     "dt_time_stop_bars", "dt_target_r_multiple", "dt_universe",
+    "open_bell_mode",
     "updated_at",
 ]
 
@@ -220,6 +226,8 @@ def update(**kwargs) -> dict:
     sets, vals = [], []
     for k, v in kwargs.items():
         if k not in EDITABLE_KEYS:
+            continue
+        if k == "open_bell_mode" and v not in ("off", "notify"):
             continue
         sets.append(f"{k}=?")
         vals.append(_coerce_store(v))
