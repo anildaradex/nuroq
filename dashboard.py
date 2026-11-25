@@ -1285,173 +1285,72 @@ def _build_watchlist_rows(analyses: list, batch_funds: dict) -> list:
 
 def run_research_cycle(top_n: int = 150) -> str:
     """
-    Ad-hoc Tier-1 cache population. Pulls Polygon snapshot, filters by liquidity
-    and momentum, runs analyze_single_ticker_data on top N. Both
-    fundamentals_cache and ai_score_cache get written through.
+    Nightly research for the open-bell pipeline (pipeline/research.py): liquid
+    uptrending stocks → trend-pullback rules and score → AI event flags on the
+    top names → stored picks. Also rewrites watchlist_today so the live agent
+    and the Watchlist view follow the same names. `top_n` is kept for callers
+    and no longer used.
 
-    Designed to be called from a background thread (e.g. the Refresh Cache
-    button). Notifies via Telegram at 25%/50%/75%/100% and on completion.
-    Returns a short status string for the immediate caller.
+    Designed to be called from a background thread. Returns a short status string.
     """
     with _research_lock:
         if _research_in_progress["active"]:
             return "⚠️ Research cycle already running — wait for it to finish or restart the app."
         _research_in_progress.update(
-            active=True, started_at=datetime.now(), progress=0, total=top_n
+            active=True, started_at=datetime.now(), progress=0, total=0
         )
-
     try:
-        logger.log(f"🔬 [Research Cycle] Starting ad-hoc Tier-1 refresh (top {top_n})...")
-
-        # `get_last_trading_day()` only excludes weekends — it doesn't know
-        # about US market holidays (Memorial Day, July 4, etc.). If we land
-        # on a holiday, Polygon returns `status=OK, resultsCount=0`. Roll
-        # the date back day-by-day (skipping weekends) until we find a day
-        # with real data. Caps at 10 calendar days as a safety belt.
-        target_date = get_last_trading_day()
-        resp_c = None
-        for attempt in range(10):
-            rate_limiter.wait()
-            url_curr = (f"https://api.polygon.io/v2/aggs/grouped/locale/us/market/stocks/"
-                        f"{target_date}?adjusted=true&apiKey={POLYGON_API_KEY}")
-            r = requests.get(url_curr, timeout=20).json()
-            results = r.get("results") or []
-            if results:
-                resp_c = r
-                if attempt > 0:
-                    logger.log(f"   ↳ Holiday/empty rollback: using {target_date} "
-                               f"(after {attempt} day(s) skipped).", level="INFO")
-                break
-            # Roll back to the previous weekday
-            from datetime import datetime as _dt
-            d = _dt.strptime(target_date, "%Y-%m-%d").date()
-            old_date = target_date
-            while True:
-                d -= timedelta(days=1)
-                if d.weekday() < 5:  # Mon-Fri
-                    break
-            target_date = d.strftime("%Y-%m-%d")
-            logger.log(f"   ↳ Empty snapshot for {old_date} (likely holiday), "
-                       f"trying {target_date}…", level="WARNING")
-        if resp_c is None:
-            raise RuntimeError(
-                "Polygon snapshot returned no results for 10 consecutive trading days — "
-                "Polygon outage, missing API key, or extended market closure?"
-            )
-
-        # Compute the 20-trading-day-ago anchor relative to the date we settled on
-        from datetime import datetime as _dt
-        anchor = _dt.strptime(target_date, "%Y-%m-%d").date()
-        d20 = anchor
-        skipped = 0
-        while skipped < 20:
-            d20 -= timedelta(days=1)
-            if d20.weekday() < 5:
-                skipped += 1
-        date_20d_ago = d20.strftime("%Y-%m-%d")
-
-        rate_limiter.wait()
-        url_hist = (f"https://api.polygon.io/v2/aggs/grouped/locale/us/market/stocks/"
-                    f"{date_20d_ago}?adjusted=true&apiKey={POLYGON_API_KEY}")
-        resp_h = requests.get(url_hist, timeout=20).json()
-
-        hist_prices = {item['T']: item['c'] for item in resp_h.get("results", [])}
-
-        # Liquidity + momentum filter (looser than agent loop to populate broader cache).
-        candidates = []
-        for item in resp_c["results"]:
-            price = item.get('c', 0)
-            vol = item.get('v', 0)
-            if price < 2 or vol < 500_000:
-                continue
-            p20 = hist_prices.get(item['T'])
-            if not p20 or price <= p20:
-                continue
-            candidates.append(item)
-
-        candidates.sort(key=lambda x: x.get('v', 0), reverse=True)
-        top_picks = candidates[:top_n]
-        _research_in_progress["total"] = len(top_picks)
-        logger.log(f"🔬 [Research Cycle] {len(top_picks)} tickers selected for cache refresh.")
-
-        gatekeeper.send_notification(
-            f"🔬 Research cycle started — {len(top_picks)} tickers in scope. "
-            f"ETA ~{len(top_picks) * 8 // 60} min."
+        from pipeline import research as _ob_research
+        summary = _ob_research.run(
+            ai_run=_open_bell_ai_run(),
+            notify=gatekeeper.send_notification,
+            log=logger.log,
         )
+        rows = summary["rows"]
+        _research_in_progress.update(progress=len(rows), total=len(rows))
 
-        # Pre-fetch fundamentals + history in batches (already cached helpers).
-        # We need an asyncio loop because the batch helpers are async; the worker
-        # thread has none by default. CLOSE the loop in finally so we don't leak
-        # file descriptors / scheduler state per cycle.
-        tickers = [p['T'] for p in top_picks]
+        # Keep the caches the live agent rescoring reads warm for the top names
+        # (each fetch can hit Polygon's rate limit, so not the whole eligible set).
+        tickers = [r["ticker"] for r in rows[:30]]
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
-            batch_funds = loop.run_until_complete(get_fundamentals_batch_async(tickers, logger))
-            batch_history = loop.run_until_complete(get_history_batch_async(tickers, logger, skip_stale=True))
+            loop.run_until_complete(get_fundamentals_batch_async(tickers, logger))
+        except Exception as e:
+            logger.log(f"⚠️ [Research Cycle] fundamentals warm-up failed: {e}", level="WARNING")
         finally:
             loop.close()
             asyncio.set_event_loop(None)
+        for r in rows:
+            if r["ai"]:
+                try:
+                    ai_score_cache.store(r["ticker"], {
+                        "score": int(r["ai"]["points"] * 10),
+                        "rating": "BUY" if r["rating"] == "BUY" else "HOLD",
+                        "reasoning": r["ai"]["veto_reason"] or "; ".join(
+                            f"{e['type']} ({e['date']})" for e in r["ai"]["flags"]) or "No material events found.",
+                        "considerations": [],
+                    })
+                except Exception:
+                    pass
 
-        # Collect each analysis result so we can write a ranked watchlist at the end.
-        analysis_results = []
-
-        # Analyze each (writes through fundamentals_cache + ai_score_cache via
-        # analyze_single_ticker_data's cache hooks).
-        progress_milestones = {int(len(top_picks) * f): int(f * 100)
-                               for f in (0.25, 0.50, 0.75)}
-        for i, item in enumerate(top_picks, start=1):
-            ticker = item['T']
-            history = batch_history.get(ticker, [])
-            # Inject today's bar so technicals reflect the current session.
-            # Defensive: Polygon raw bars have `t` as int ms; normalize before comparing
-            # to target_date (string). Should not be needed after get_full_history fix,
-            # but guards against any other caller leaking raw Polygon shapes.
-            if history:
-                last_t = history[-1].get("t", "")
-                if isinstance(last_t, (int, float)):
-                    last_t = date.fromtimestamp(last_t / 1000).strftime("%Y-%m-%d")
-                if last_t < target_date:
-                    history = history + [{
-                        "o": item.get("o"), "h": item.get("h"),
-                        "l": item.get("l"), "c": item.get("c"),
-                        "v": item.get("v"), "t": target_date,
-                    }]
-            try:
-                analysis = analyze_single_ticker_data(
-                    ticker,
-                    pre_fetched_data=item,
-                    pre_fetched_funds=batch_funds.get(ticker),
-                    pre_fetched_history=history,
-                )
-                if analysis:
-                    analysis_results.append(analysis)
-            except Exception as e:
-                logger.log(f"⚠️ [Research Cycle] {ticker} failed: {e}", level="WARNING")
-            _research_in_progress["progress"] = i
-
-            if i in progress_milestones:
-                pct = progress_milestones[i]
-                gatekeeper.send_notification(f"🔬 Research cycle: {pct}% ({i}/{len(top_picks)})")
-
-        # Write today's ranked watchlist for the live reactive agent (Phase 3) to consume.
-        watchlist_rows = _build_watchlist_rows(analysis_results, batch_funds)
-        n_written = watchlist_today.replace_all(watchlist_rows)
-
-        elapsed_min = (datetime.now() - _research_in_progress['started_at']).seconds // 60
-        n_buys = sum(1 for r in watchlist_rows if r["recommendation"] == "BUY")
-        msg = (f"✅ Research cycle complete: {len(top_picks)} tickers analyzed in {elapsed_min} min. "
-               f"Watchlist: {n_written} ranked candidates ({n_buys} BUY). "
-               f"Fundamentals + AI scores cached.")
+        n_written = watchlist_today.replace_all([{
+            "ticker": r["ticker"], "rank": r["rank"], "quant_score": r["score"],
+            "ai_score": int(r["ai"]["points"] * 10) if r["ai"] else None,
+            "recommendation": "BUY" if r["rating"] == "BUY" else "HOLD",
+            "price": r["features"]["close"], "change_pct": r["features"]["change_pct"],
+            "technicals_summary": " | ".join(f"{k} {v:g}" for k, v in r["breakdown"].items()),
+            "fundamentals_summary": f"Sector: {r['sector'] or 'N/A'}",
+        } for r in rows])
+        msg = (f"✅ Research cycle complete ({summary['run_date']}): {summary['eligible']} eligible, "
+               f"{len(summary['buys'])} BUY. Watchlist: {n_written} rows.")
         logger.log(msg)
-        gatekeeper.send_notification(msg)
         return msg
     except Exception as e:
         import traceback as _tb
-        tb_str = _tb.format_exc()
         err = f"❌ Research cycle error: {e}"
         logger.log(err, level="ERROR")
-        logger.log(f"   Traceback:\n{tb_str}", level="ERROR")
+        logger.log(f"   Traceback:\n{_tb.format_exc()}", level="ERROR")
         try:
             gatekeeper.send_notification(f"{err}\n(see activity.log for traceback)")
         except Exception:
@@ -1459,6 +1358,53 @@ def run_research_cycle(top_n: int = 150) -> str:
         return err
     finally:
         _research_in_progress.update(active=False, started_at=None, progress=0, total=0)
+
+
+def _open_bell_ai_run():
+    """Search-grounded Gemini callable for the pipeline's AI flags, or None if not configured."""
+    if not (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+            or os.getenv("NUROQ_GEMINI_VERTEX", "0") == "1"):
+        return None
+    return analyst.web_search_answer
+
+
+def run_open_bell(recheck: bool = False) -> dict:
+    """09:35 ET entry pass (or the 10:00 recheck) for today's open-bell picks."""
+    from pipeline import execute as _ob_execute
+    from news_engine import check_news_for_crossing
+
+    def _news_block(t):
+        try:
+            n = check_news_for_crossing(t)
+            return bool(n and n.get("classification") == "NEGATIVE_BLOCK")
+        except Exception:
+            return False
+
+    def _wash(t):
+        try:
+            return bool((wash_sale_check(t) or {}).get("risk"))
+        except Exception:
+            return False
+
+    try:
+        return _ob_execute.run(
+            notify=gatekeeper.send_notification, log=logger.log,
+            held_fn=lambda: alpaca_api.list_position_symbols() or set(),
+            news_block_fn=_news_block, wash_sale_fn=_wash, recheck=recheck,
+        )
+    except Exception as e:
+        logger.log(f"⚠️ Open-bell run failed: {e}", level="ERROR")
+        return {"error": str(e)}
+
+
+def run_open_bell_tracker() -> dict:
+    """Evening job: fill forward returns and simulated outcomes for past picks."""
+    from pipeline import tracker as _ob_tracker
+    try:
+        return _ob_tracker.update(log=logger.log)
+    except Exception as e:
+        logger.log(f"⚠️ Open-bell tracker failed: {e}", level="ERROR")
+        return {"error": str(e)}
 
 
 def trigger_research_cycle_async() -> str:

@@ -282,6 +282,15 @@ export function ConfigurationView() {
         />
       </Section>
 
+      <Section title="Trade sources">
+        <ToggleRow
+          label="Open-bell swing picks · notify only"
+          help="Overnight research picks pullbacks in uptrending stocks; at 09:35 ET each pick is re-checked against live quotes and sent to Telegram with size, stop and target. No orders are placed. Approve and Auto modes are not available yet."
+          checked={draft.open_bell_mode === "notify"}
+          onChange={(v) => setField("open_bell_mode", v ? "notify" : "off")}
+        />
+      </Section>
+
       {/* Day-trader (Session 8) — parallel intraday brain.
           Mode flips commit immediately via /api/day-trader/mode (no Save dance,
           because mode = "live operator action"). Knobs use the regular draft +

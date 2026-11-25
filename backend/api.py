@@ -106,6 +106,23 @@ def _start_scheduler() -> None:
         print(f"[scheduler] ⚠️  failed to start: {e}")
 
 
+@app.on_event("startup")
+def _start_open_bell_jobs() -> None:
+    """Open-bell 09:35 entry pass, 10:00 quote-quality recheck and evening tracker.
+    Runs wherever the backend runs with background services on (Mac and cloud)."""
+    if os.getenv("NUROQ_BACKGROUND_SERVICES", "1") == "0":
+        return
+    try:
+        from scheduler import start_inproc_scheduler
+        start_inproc_scheduler([
+            ("open_bell",         9, 35, lambda: dash.run_open_bell()),
+            ("open_bell_recheck", 10, 0, lambda: dash.run_open_bell(recheck=True)),
+            ("open_bell_tracker", 18, 0, dash.run_open_bell_tracker),
+        ], dash.logger)
+    except Exception as e:
+        print(f"[scheduler] ⚠️  open-bell jobs failed to start: {e}")
+
+
 app.add_middleware(
     CORSMiddleware,
     # Vite dev (5173), Capacitor iOS (capacitor://localhost), Capacitor Android
@@ -1485,6 +1502,7 @@ class AgentConfigResp(BaseModel):
     dt_time_stop_bars: int = 30
     dt_target_r_multiple: float = 2.0
     dt_universe: str = ""
+    open_bell_mode: str = "notify"
     updated_at: int
 
 
@@ -1510,6 +1528,7 @@ class AgentConfigUpdateReq(BaseModel):
     dt_time_stop_bars: Optional[int] = None
     dt_target_r_multiple: Optional[float] = None
     dt_universe: Optional[str] = None
+    open_bell_mode: Optional[str] = None
 
 
 def _config_with_env(cfg: dict) -> dict:
@@ -1533,6 +1552,19 @@ def update_agent_config(req: AgentConfigUpdateReq):
     upd = {k: v for k, v in req.model_dump().items() if v is not None}
     cfg = _agent_config.update(**upd)
     return AgentConfigResp(**_config_with_env(cfg))
+
+
+@app.get("/api/open-bell/today")
+def open_bell_today():
+    """Latest open-bell research run: regime, picks with their 09:35 outcome, top eligible names."""
+    from pipeline import store as _ob
+    run = _ob.latest_run()
+    if not run:
+        return {"run": None, "picks": [], "eligible": []}
+    elig = [{k: r[k] for k in ("ticker", "rank", "score", "rating", "score_no_ai", "sector",
+                               "breakdown", "ai")} for r in _ob.eligible(run["run_date"])[:40]]
+    return {"run": run, "picks": _ob.picks(run["run_date"]), "eligible": elig,
+            "mode": _agent_config.get().get("open_bell_mode", "notify")}
 
 
 class HaltReq(BaseModel):

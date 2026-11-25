@@ -2691,5 +2691,8 @@ class TestPremarketScanner(unittest.TestCase):
         self.assertEqual(result["filters"]["negative_block"], 1)
 
 
+from test_pipeline import *  # noqa: E402,F401,F403 — open-bell pipeline tests
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

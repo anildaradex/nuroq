@@ -316,6 +316,7 @@ export interface AgentConfig {
   dt_time_stop_bars: number;
   dt_target_r_multiple: number;
   dt_universe: string;       // comma-separated tickers; "" = (scanner-built / auto)
+  open_bell_mode: "off" | "notify";
   updated_at: number;
 }
 
